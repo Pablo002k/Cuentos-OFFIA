@@ -4,16 +4,22 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Cuento Colaborativo</title>
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://firestore.googleapis.com" crossorigin>
+  <link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin>
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js">
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js">
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js">
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div id="loading" class="screen"><p>Conectando…</p></div>
+  <div id="loading" class="screen"><p>Cargando…</p></div>
 
   <section id="nickname-screen" class="screen hidden">
     <h1>📖 Cuento Colaborativo</h1>
     <p>Escribe un apodo para entrar</p>
     <input id="nickname-input" type="text" placeholder="Tu apodo" maxlength="20" autocomplete="off" />
-    <button id="enter-btn">Entrar</button>
+    <button id="enter-btn" disabled>Conectando…</button>
     <p id="nickname-error" class="error"></p>
     <button id="admin-login-btn" class="link-btn">Acceso administrador</button>
   </section>
@@ -59,19 +65,22 @@
       <h1>📚 Todos los cuentos</h1>
       <p class="info">Aquí se guardan todos los cuentos creados.</p>
       <div id="gallery-grid" class="gallery-grid"></div>
-      <p id="gallery-empty" class="info hidden">Todavía no hay cuentos publicados.</p>
+      <p id="gallery-empty" class="info">Todavía no hay cuentos publicados.</p>
     </section>
   </div>
 
   <section id="admin-panel" class="screen hidden">
     <h2>Panel de administrador</h2>
     <p class="info">Conectado como <span id="admin-email"></span></p>
+
     <div class="button-row">
-      <button id="toggle-btn" class="primary">Comenzar cuento</button>
+      <button id="open-btn" class="primary" disabled>▶ Comenzar cuento</button>
+      <button id="close-btn" class="secondary" disabled>⏹ Cerrar y terminar cuento</button>
+    </div>
+    <div class="button-row">
       <button id="reset-btn" class="secondary">🗑️ Reiniciar todo</button>
       <button id="logout-btn" class="secondary">↩︎ Cerrar sesión</button>
     </div>
-    <button id="view-public-btn" class="secondary">👁️ Ver como público</button>
     <p id="state-info" class="info"></p>
 
     <hr class="divider">
