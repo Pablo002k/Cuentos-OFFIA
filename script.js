@@ -71,6 +71,78 @@ const nicknameScreen = $('nickname-screen');
 const mainApp = $('main-app');
 const adminPanel = $('admin-panel');
 
+/* ============ FRASES DE CUENTO EN EL FONDO ============ */
+const BG_PHRASES = [
+  'Había una vez', 'Érase una vez', 'de repente…', 'entonces', 'y colorín colorado',
+  'un día cualquiera', 'en un lugar muy lejano', 'mientras tanto…', 'al amanecer', 'sin darse cuenta',
+  'y vivieron felices', 'cuenta la leyenda', 'hace mucho, mucho tiempo', 'nadie lo esperaba',
+  'de pronto, una luz', 'en lo profundo del bosque', 'poco después', 'al caer la noche',
+  'y así comenzó todo', 'continuará…'
+];
+(function buildBackgroundPhrases() {
+  const bg = document.querySelector('.bg');
+  if (!bg) return;
+  BG_PHRASES.forEach((text, i) => {
+    const s = document.createElement('span');
+    s.className = 'glyph';
+    s.textContent = text;
+    s.style.left = ((i * 29) % 72 + 2) + '%';
+    s.style.animationDuration = (24 + (i * 7) % 13) + 's';
+    s.style.animationDelay = (-((i * 37) % 30)) + 's';
+    s.style.fontSize = (1 + ((i * 5) % 4) * 0.12) + 'rem';
+    bg.appendChild(s);
+  });
+})();
+
+/* ============ MÚSICA DE FONDO ============ */
+// Para usarla: sube a GitHub un archivo llamado musica.mp3 (junto a index.html).
+const MUSIC_FILE = 'musica.mp3';
+const MUSIC_VOLUME = 0.3;        // volumen suave (0 a 1)
+const MUSIC_AUTOSTART = true;    // true = empieza sola al primer toque; false = solo si se pulsa el botón
+const MUSIC_OFF_KEY = 'cuento_music_off';
+const music = new Audio(MUSIC_FILE);
+music.loop = true; music.preload = 'none'; music.volume = 0;
+let musicFade = null;
+let musicAvailable = false;
+function setMusicUI(on) {
+  const b = $('music-btn');
+  b.classList.toggle('on', on);
+  b.textContent = on ? '🔊' : '🔇';
+  b.setAttribute('aria-pressed', String(on));
+}
+function fadeMusic(target, ms) {
+  clearInterval(musicFade);
+  const steps = 20, start = music.volume; let i = 0;
+  musicFade = setInterval(() => {
+    i++;
+    music.volume = Math.max(0, Math.min(1, start + (target - start) * i / steps));
+    if (i >= steps) { clearInterval(musicFade); if (target === 0) music.pause(); }
+  }, ms / steps);
+}
+async function playMusic() {
+  try { await music.play(); fadeMusic(MUSIC_VOLUME, 2000); setMusicUI(true); }
+  catch (e) { setMusicUI(false); }
+}
+function stopMusic() { fadeMusic(0, 600); setMusicUI(false); }
+function musicPref() { try { return localStorage.getItem(MUSIC_OFF_KEY) === '1'; } catch (e) { return false; } }
+function setMusicPref(off) { try { if (off) localStorage.setItem(MUSIC_OFF_KEY, '1'); else localStorage.removeItem(MUSIC_OFF_KEY); } catch (e) {} }
+// El botón solo aparece si el archivo de música existe
+fetch(MUSIC_FILE, { method: 'HEAD' }).then(r => {
+  if (!r.ok) return;
+  musicAvailable = true;
+  $('music-btn').classList.remove('hidden');
+}).catch(() => {});
+$('music-btn').addEventListener('click', () => {
+  if (music.paused) { setMusicPref(false); playMusic(); } else { setMusicPref(true); stopMusic(); }
+});
+// Los navegadores solo dejan sonar la música después de un toque de la persona
+let musicGestureDone = false;
+['click', 'touchend', 'keydown'].forEach(ev => document.addEventListener(ev, (e) => {
+  if (musicGestureDone) return;
+  musicGestureDone = true;
+  if (MUSIC_AUTOSTART && musicAvailable && !musicPref() && music.paused && !(e.target.closest && e.target.closest('#music-btn'))) playMusic();
+}, true));
+
 function showScreen(s) {
   [loadingScreen, nicknameScreen, mainApp, adminPanel].forEach(x => x.classList.add('hidden'));
   s.classList.remove('hidden');
