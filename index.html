@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cuento Colaborativo</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="loading" class="screen">
+    <p>Conectando…</p>
+  </div>
+
+  <section id="nickname-screen" class="screen hidden">
+    <h1>📖 Cuento Colaborativo</h1>
+    <p>Escribe un apodo para entrar</p>
+    <input id="nickname-input" type="text" placeholder="Tu apodo" maxlength="20" autocomplete="off" />
+    <button id="enter-btn">Entrar</button>
+    <p id="nickname-error" class="error"></p>
+    <button id="admin-login-btn" class="link-btn">Acceso administrador</button>
+  </section>
+
+  <section id="writing-room" class="screen hidden">
+    <header class="room-header">
+      <span id="my-nickname" class="badge"></span>
+      <span id="status-badge" class="badge"></span>
+    </header>
+    <div id="story-container" class="story"></div>
+    <div class="writing-controls">
+      <input id="word-input" type="text" placeholder="Máximo 3 palabras" disabled autocomplete="off" />
+      <button id="send-btn" disabled>Enviar</button>
+      <p id="cooldown-msg" class="info"></p>
+      <p id="input-error" class="error"></p>
+    </div>
+  </section>
+
+  <section id="admin-panel" class="screen hidden">
+    <h2>Panel de administrador</h2>
+    <p class="info">Conectado como <span id="admin-email"></span></p>
+    <button id="toggle-btn" class="primary">Abrir escritura</button>
+    <p id="state-info" class="info"></p>
+    <hr style="margin: 24px 0; border:none; border-top:1px solid #d2d2d7;">
+    <p class="info">Puedes ver la sala de escritura abajo.</p>
+    <div id="admin-room"></div>
+  </section>
+
+  <script type="module" src="script.js"></script>
+</body>
+</html>
