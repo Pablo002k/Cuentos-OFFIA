@@ -17,6 +17,15 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <div class="bg" aria-hidden="true">
+    <i class="orb o1"></i><i class="orb o2"></i><i class="orb o3"></i>
+    <span class="glyph" style="left:6%;animation-delay:0s">Había una vez</span>
+    <span class="glyph" style="left:62%;animation-delay:-4s">de repente…</span>
+    <span class="glyph" style="left:28%;animation-delay:-9s">entonces</span>
+    <span class="glyph" style="left:78%;animation-delay:-13s">érase que se era</span>
+    <span class="glyph" style="left:45%;animation-delay:-17s">y colorín colorado</span>
+    <span class="glyph" style="left:14%;animation-delay:-21s">un día cualquiera</span>
+  </div>
   <div id="loading" class="screen"><div class="loader" aria-label="Cargando"><i></i><i></i><i></i></div></div>
 
   <section id="nickname-screen" class="screen hidden">
@@ -69,6 +78,20 @@
           <img id="padlet-image" alt="Ilustración del cuento" />
           <div id="padlet-story" class="padlet-story"></div>
         </article>
+        <div id="reactions" class="reactions">
+          <p class="reactions-title">¿Qué te pareció el cuento?</p>
+          <div class="reaction-row">
+            <button class="react-btn" data-react="heart" aria-label="Me encanta"><span class="emo">❤️</span><span class="count"></span></button>
+            <button class="react-btn" data-react="laugh" aria-label="Me dio risa"><span class="emo">😂</span><span class="count"></span></button>
+            <button class="react-btn" data-react="like" aria-label="Me gusta"><span class="emo">👍</span><span class="count"></span></button>
+            <button class="react-btn" data-react="dislike" aria-label="No me gustó"><span class="emo">👎</span><span class="count"></span></button>
+            <button class="react-btn" data-react="sad" aria-label="Me dio tristeza"><span class="emo">😢</span><span class="count"></span></button>
+            <button class="react-btn" data-react="clap" aria-label="Aplausos"><span class="emo">👏</span><span class="count"></span></button>
+            <button class="react-btn" data-react="fire" aria-label="Fuego"><span class="emo">🔥</span><span class="count"></span></button>
+            <button class="react-btn" data-react="wow" aria-label="Sorpresa"><span class="emo">😮</span><span class="count"></span></button>
+          </div>
+          <p id="reaction-msg" class="info"></p>
+        </div>
       </div>
     </section>
 
@@ -127,6 +150,17 @@
 
         <div class="panel">
           <h3>Ilustración</h3>
+          <h4>Paso 1: que la IA entienda el cuento</h4>
+          <div class="button-row">
+            <button id="analyze-btn" class="primary">🧠 Analizar el cuento con IA</button>
+          </div>
+          <label class="label" for="interp-input">Lo que entendió la IA (puedes corregirlo)</label>
+          <textarea id="interp-input" rows="3" placeholder="Aquí aparecerá un resumen fiel del cuento, con la ortografía corregida."></textarea>
+          <label class="label" for="scene-input">Descripción para dibujar (en inglés, puedes editarla)</label>
+          <textarea id="scene-input" rows="5" placeholder="Aquí aparecerá la escena detallada que se enviará al generador de imágenes."></textarea>
+          <p id="style-info" class="info small"></p>
+
+          <h4>Paso 2: generar la imagen</h4>
           <label class="label" for="style-select">Estilo de la imagen</label>
           <select id="style-select">
             <option value="auto">Automático (la IA decide)</option>
@@ -136,15 +170,21 @@
           </select>
 
           <div class="button-row">
-            <button id="gen-flux-btn" class="primary">🎨 Generar con Pollinations · Flux</button>
-            <button id="gen-turbo-btn" class="secondary">⚡ Generar con Pollinations · Turbo</button>
+            <button id="gen-flux-btn" class="primary">🎨 Generar · Flux</button>
+            <button id="gen-turbo-btn" class="secondary">⚡ Generar · Turbo</button>
           </div>
           <p class="info small">Gratis y sin clave. Si una imagen no te gusta, prueba con el otro botón.</p>
+          <label class="label" for="pol-model">Modelos de Pollinations con tu clave (opcional)</label>
+          <select id="pol-model" disabled></select>
+          <div class="button-row">
+            <button id="gen-pol-btn" class="secondary" disabled>✨ Generar con el modelo elegido</button>
+          </div>
           <p id="scene-info" class="info"></p>
           <p id="gen-error" class="error"></p>
           <p id="gen-status" class="info"></p>
 
-          <h4>Plan B: subir una imagen</h4>
+          <h4>Plan B: subir o pegar una imagen</h4>
+          <p class="info small">También puedes copiar una imagen y pegarla aquí con Ctrl+V.</p>
           <div class="button-row">
             <button id="upload-btn" class="secondary">📁 Subir imagen manual</button>
             <input id="upload-input" type="file" accept="image/*" class="hidden" />
@@ -172,6 +212,18 @@
         </div>
       </div>
 
+      <div class="panel">
+        <h3>Cuentos publicados</h3>
+        <p class="info small">Marca los que quieras eliminar de la galería.</p>
+        <div id="stories-list" class="stories-list"></div>
+        <div class="button-row">
+          <button id="stories-refresh-btn" class="secondary">🔄 Actualizar lista</button>
+          <button id="stories-all-btn" class="secondary">Marcar todos</button>
+          <button id="stories-delete-btn" class="secondary danger">🗑️ Eliminar marcados</button>
+        </div>
+        <p id="stories-feedback" class="info"></p>
+      </div>
+
       <details class="panel keys">
         <summary>Claves de IA para título y análisis (opcional)</summary>
         <p class="info small">Pollinations ya no responde texto sin clave. Con una clave gratuita de Gemini el título y el análisis del cuento funcionan bien. Se guarda solo en este navegador.</p>
@@ -181,11 +233,15 @@
         <input id="pollen-key" type="password" placeholder="Pega aquí tu clave" autocomplete="off" />
         <div class="button-row">
           <button id="save-keys-btn" class="secondary">💾 Guardar claves</button>
+          <button id="test-gemini-btn" class="secondary">🔍 Probar Gemini</button>
         </div>
         <p id="keys-feedback" class="info"></p>
       </details>
     </div>
   </section>
+
+  <div id="fx-layer" class="fx-layer" aria-hidden="true"></div>
+  <footer class="credit">Desarrollado por <strong>Pablo A. Cejas</strong></footer>
 
   <script type="module" src="script.js"></script>
 </body>
