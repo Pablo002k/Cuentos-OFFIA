@@ -24,24 +24,26 @@ body {
 
 h1 { font-size: 28px; margin-bottom: 8px; }
 h2 { font-size: 22px; margin-bottom: 12px; }
+h3 { font-size: 17px; margin: 20px 0 10px; }
 p { margin-bottom: 8px; }
 
-input[type="text"] {
+input[type="text"], textarea, select {
   width: 100%;
   padding: 14px 16px;
   font-size: 16px;
+  font-family: inherit;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--card);
   margin-bottom: 12px;
   outline: none;
 }
+textarea { resize: vertical; line-height: 1.5; font-size: 14px; }
 
-input[type="text"]:focus {
+input[type="text"]:focus, textarea:focus, select:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.15);
 }
-
 input[type="text"]:disabled { opacity: 0.5; background: #f0f0f0; }
 
 button {
@@ -55,10 +57,17 @@ button {
   cursor: pointer;
   width: 100%;
   transition: background 0.15s;
+  margin-bottom: 8px;
 }
-
 button:hover:not(:disabled) { background: var(--primary-hover); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+button.secondary {
+  background: var(--card);
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+button.secondary:hover:not(:disabled) { background: #f0f0f2; }
 
 button.link-btn {
   background: transparent;
@@ -72,6 +81,9 @@ button.link-btn:hover { color: var(--primary); background: transparent; }
 
 .error { color: var(--accent); font-size: 14px; margin-top: 4px; min-height: 20px; }
 .info { color: var(--muted); font-size: 14px; margin-top: 4px; min-height: 20px; }
+.info.small { font-size: 12px; }
+.label { display: block; font-size: 14px; color: var(--muted); margin: 12px 0 6px; }
+.divider { margin: 24px 0; border: none; border-top: 1px solid var(--border); }
 
 .room-header {
   display: flex;
@@ -89,7 +101,6 @@ button.link-btn:hover { color: var(--primary); background: transparent; }
   font-size: 13px;
   border: 1px solid var(--border);
 }
-
 .badge.open { background: #e8f8ee; color: #1a7f37; border-color: #b6e3c4; }
 .badge.closed { background: #fdecee; color: #b91c1c; border-color: #f5c2c7; }
 
@@ -97,15 +108,16 @@ button.link-btn:hover { color: var(--primary); background: transparent; }
   background: var(--card);
   border-radius: 16px;
   padding: 20px;
-  min-height: 200px;
+  min-height: 120px;
   font-size: 17px;
   line-height: 1.7;
   margin-bottom: 16px;
   border: 1px solid var(--border);
   word-wrap: break-word;
   white-space: pre-wrap;
+  max-height: 340px;
+  overflow-y: auto;
 }
-
 .story:empty::before {
   content: 'El cuento aparecerá aquí…';
   color: var(--muted);
@@ -119,3 +131,49 @@ button.link-btn:hover { color: var(--primary); background: transparent; }
   border: 1px solid var(--border);
 }
 .writing-controls input { margin-bottom: 10px; }
+
+.illustrating {
+  background: var(--card);
+  border-radius: 16px;
+  padding: 32px 20px;
+  text-align: center;
+  border: 1px solid var(--border);
+}
+.illustrating p:first-child { font-size: 20px; margin-bottom: 12px; }
+
+.button-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.button-row button { flex: 1; min-width: 140px; margin-bottom: 0; }
+
+.preview-img {
+  width: 100%;
+  border-radius: 16px;
+  margin: 12px 0;
+  border: 1px solid var(--border);
+  display: block;
+}
+
+.padlet-card {
+  background: var(--card);
+  border-radius: 20px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+}
+.padlet-card img {
+  width: 100%;
+  border-radius: 12px;
+  margin-bottom: 16px;
+  display: block;
+}
+.padlet-story {
+  font-size: 18px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: var(--fg);
+}
