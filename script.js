@@ -5,7 +5,7 @@ import {
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 import {
   getFirestore, doc, getDoc, setDoc, collection, query, orderBy,
-  onSnapshot, serverTimestamp, runTransaction, writeBatch, getDocs, where
+  onSnapshot, serverTimestamp, runTransaction, writeBatch, getDocs
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
 /* ⚠️ CONSERVA ESTO */
@@ -40,16 +40,12 @@ let currentUser = null;
 let currentNickname = null;
 let isAdmin = false;
 let cooldownInterval = null;
-let unsubscribes = [];
+let unsubs = [];
 let currentStoryId = null;
 let currentFinalStory = '';
 let currentFinalPrompt = '';
 let currentPreviewImage = null;
 let currentPreviewSource = null;
-let adminContribUnsub = null;
-let publicContribUnsub = null;
-let galleryUnsub = null;
-let adminViewingPublic = false;
 
 const $ = (id) => document.getElementById(id);
 const loadingScreen = $('loading');
@@ -66,19 +62,17 @@ function countWords(t) {
   const n = normalizeText(t);
   return n === '' ? 0 : n.split(' ').filter(w => w.length > 0).length;
 }
-function showError(msg) {
+function showInputError(msg) {
   const el = $('input-error'); if (!el) return;
   el.textContent = msg;
   setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 4000);
 }
-function clearListeners() {
-  unsubscribes.forEach(u => { try { u(); } catch (e) {} });
-  unsubscribes = [];
-  if (publicContribUnsub) { try { publicContribUnsub(); } catch (e) {} publicContribUnsub = null; }
-  if (adminContribUnsub) { try { adminContribUnsub(); } catch (e) {} adminContribUnsub = null; }
-  if (galleryUnsub) { try { galleryUnsub(); } catch (e) {} galleryUnsub = null; }
+function clearAllListeners() {
+  unsubs.forEach(u => { try { u(); } catch (e) {} });
+  unsubs = [];
 }
 function newStoryId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+
 function buildPrompt(story, styleKey) {
   const style = STYLES[styleKey] || STYLES.cartoon3d;
   const trimmed = story.length > STORY_PROMPT_LIMIT ? story.slice(0, STORY_PROMPT_LIMIT) + '…' : story;
@@ -135,15 +129,16 @@ document.querySelectorAll('.tab').forEach(tab => {
     const target = tab.dataset.tab;
     $('tab-live').classList.toggle('hidden', target !== 'live');
     $('tab-gallery').classList.toggle('hidden', target !== 'gallery');
+    if (target === 'gallery') loadGallery();
   });
 });
 
 /* ============ AUTENTICACIÓN ============ */
 onAuthStateChanged(auth, async (user) => {
-  clearListeners();
+  clearAllListeners();
   if (!user) {
     try { await signInAnonymously(auth); }
-    catch (e) { console.error(e); alert('Error al conectar con Firebase.'); }
+    catch (e) { console.error(e); }
     return;
   }
   currentUser = user;
@@ -161,6 +156,8 @@ onAuthStateChanged(auth, async (user) => {
     setupPublicView();
     showScreen(mainApp);
   } else {
+    $('enter-btn').disabled = false;
+    $('enter-btn').textContent = 'Entrar';
     showScreen(nicknameScreen);
   }
 });
@@ -199,23 +196,34 @@ async function ensureStateDoc() {
   if (!snap.exists()) {
     await setDoc(ref, {
       status: 'idle', storyId: newStoryId(),
-      finalStory: '', finalPrompt: '', finalTitle: '', finalImage: '', finalStyle: 'cartoon3d',
-      updatedAt: serverTimestamp()
+      finalStory: '', finalPrompt: '', finalTitle: '', finalImage: '',
+      finalStyle: 'cartoon3d', updatedAt: serverTimestamp()
     });
+    return;
+  }
+  const data = snap.data();
+  const fixes = {};
+  if (!data.status) fixes.status = 'idle';
+  if (!data.storyId) fixes.storyId = newStoryId();
+  if (data.finalStory === undefined) fixes.finalStory = '';
+  if (data.finalPrompt === undefined) fixes.finalPrompt = '';
+  if (data.finalTitle === undefined) fixes.finalTitle = '';
+  if (data.finalImage === undefined) fixes.finalImage = '';
+  if (!data.finalStyle) fixes.finalStyle = 'cartoon3d';
+  if (Object.keys(fixes).length > 0) {
+    await setDoc(ref, fixes, { merge: true });
   }
 }
 
 /* ============ VISTA PÚBLICA ============ */
 function setupPublicView() {
   $('my-nickname').textContent = currentNickname || 'Anónimo';
-  setupGallery();
 
   const u = onSnapshot(doc(db, 'state', 'current'), (snap) => {
     const data = snap.exists() ? snap.data() : {};
     const status = data.status || 'idle';
     currentStoryId = data.storyId || null;
 
-    // En vivo
     const isOpen = status === 'writing_open';
     const isIdle = status === 'idle';
     const isPublished = status === 'published';
@@ -242,34 +250,40 @@ function setupPublicView() {
         $('word-input').disabled = false; $('send-btn').disabled = false;
       }
     }
-    listenPublicContributions(data.storyId, isPublished);
-  });
-  unsubscribes.push(u);
+    listenContributions(data.storyId, isPublished, 'story-container');
+  }, (err) => console.error('state snapshot error:', err));
+  unsubs.push(u);
 }
 
-function listenPublicContributions(storyId, isPublished) {
+let publicContribUnsub = null;
+function listenContributions(storyId, isPublished, targetId) {
   if (publicContribUnsub) { try { publicContribUnsub(); } catch (e) {} publicContribUnsub = null; }
-  if (!storyId || isPublished) { $('story-container').textContent = ''; return; }
-  const q = query(
-    collection(db, 'contributions'),
-    where('storyId', '==', storyId),
-    orderBy('createdAt', 'asc')
-  );
+  const el = $(targetId);
+  if (!storyId || isPublished) { el.textContent = ''; return; }
+  // SIN filtro en el servidor: traemos todo y filtramos por código.
+  const q = query(collection(db, 'contributions'), orderBy('createdAt', 'asc'));
   publicContribUnsub = onSnapshot(q, (snap) => {
     const parts = [];
-    snap.forEach(d => { if (d.data().text) parts.push(d.data().text); });
-    const el = $('story-container');
+    snap.forEach(d => {
+      const data = d.data();
+      if (data.storyId === storyId && data.text) parts.push(data.text);
+    });
     el.textContent = parts.join(' ');
     el.scrollTop = el.scrollHeight;
-  }, (err) => console.error('Contrib error:', err));
+  }, (err) => {
+    console.error('contributions error:', err);
+    el.textContent = '(error al leer aportes: ' + err.message + ')';
+  });
 }
 
 /* ============ GALERÍA ============ */
-function setupGallery() {
-  if (galleryUnsub) return; // ya está escuchando
-  const q = query(collection(db, 'stories'), orderBy('publishedAt', 'desc'));
-  galleryUnsub = onSnapshot(q, (snap) => {
-    const grid = $('gallery-grid');
+let galleryLoaded = false;
+async function loadGallery() {
+  const grid = $('gallery-grid');
+  grid.innerHTML = '<p class="info">Cargando cuentos…</p>';
+  try {
+    const q = query(collection(db, 'stories'), orderBy('publishedAt', 'desc'));
+    const snap = await getDocs(q);
     grid.innerHTML = '';
     if (snap.empty) {
       $('gallery-empty').classList.remove('hidden');
@@ -281,14 +295,11 @@ function setupGallery() {
       const card = document.createElement('div');
       card.className = 'gallery-card';
       const img = document.createElement('img');
-      img.src = s.image || '';
-      img.alt = s.title || 'Cuento';
+      img.src = s.image || ''; img.alt = s.title || 'Cuento';
       const title = document.createElement('div');
-      title.className = 'gallery-title';
-      title.textContent = s.title || 'Cuento sin título';
+      title.className = 'gallery-title'; title.textContent = s.title || 'Cuento sin título';
       const story = document.createElement('div');
-      story.className = 'gallery-story';
-      story.textContent = s.story || '';
+      story.className = 'gallery-story'; story.textContent = s.story || '';
       const date = document.createElement('div');
       date.className = 'gallery-date';
       const ts = s.publishedAt && s.publishedAt.toDate ? s.publishedAt.toDate() : null;
@@ -296,7 +307,11 @@ function setupGallery() {
       card.appendChild(img); card.appendChild(title); card.appendChild(story); card.appendChild(date);
       grid.appendChild(card);
     });
-  }, (err) => console.error('Gallery error:', err));
+    galleryLoaded = true;
+  } catch (err) {
+    console.error('gallery error:', err);
+    grid.innerHTML = '<p class="error">No se pudo cargar la galería.</p>';
+  }
 }
 
 /* ============ ENVÍO ============ */
@@ -306,16 +321,16 @@ $('word-input').addEventListener('input', () => {
   const parts = normalizeText($('word-input').value).split(' ').filter(w => w.length > 0);
   if (parts.length > MAX_WORDS) {
     $('word-input').value = parts.slice(0, MAX_WORDS).join(' ');
-    showError(`Máximo ${MAX_WORDS} palabras`);
+    showInputError(`Máximo ${MAX_WORDS} palabras`);
   }
 });
 async function sendContribution() {
   if (cooldownInterval) return;
   const text = normalizeText($('word-input').value);
   const words = countWords(text);
-  if (words === 0) { showError('Escribe al menos una palabra'); return; }
-  if (words > MAX_WORDS) { showError(`Máximo ${MAX_WORDS} palabras`); return; }
-  if (!currentStoryId) { showError('El cuento no está iniciado todavía'); return; }
+  if (words === 0) { showInputError('Escribe al menos una palabra'); return; }
+  if (words > MAX_WORDS) { showInputError(`Máximo ${MAX_WORDS} palabras`); return; }
+  if (!currentStoryId) { showInputError('El cuento no está iniciado todavía'); return; }
   $('send-btn').disabled = true;
   try {
     const batch = writeBatch(db);
@@ -329,7 +344,7 @@ async function sendContribution() {
     startCooldown(COOLDOWN_SECONDS);
   } catch (e) {
     console.error(e);
-    showError('No se pudo enviar. ¿Está abierta la escritura?');
+    showInputError('No se pudo enviar. ¿Está abierta la escritura?');
     $('send-btn').disabled = false;
   }
 }
@@ -355,22 +370,8 @@ function startCooldown(seconds) {
 function setupAdmin() {
   $('admin-email').textContent = currentUser.email;
 
-  // Ver como público
-  $('view-public-btn').addEventListener('click', async () => {
-    if (!adminViewingPublic) {
-      // Guardar contexto admin y entrar como público
-      adminViewingPublic = true;
-      clearListeners();
-      // Crear sesión anónima separada en paralelo: cerramos Google y volvemos anónimo
-      if (!confirm('Se cerrará temporalmente la sesión de Google para ver la página como público. Podrás volver pulsando "Acceso administrador" y eligiendo tu cuenta. ¿Continuar?')) {
-        adminViewingPublic = false; return;
-      }
-      await signOut(auth);
-      try { await signInAnonymously(auth); } catch (e) { console.error(e); }
-    }
-  });
+  let adminContribUnsub = null;
 
-  // Estado
   const u = onSnapshot(doc(db, 'state', 'current'), (snap) => {
     const data = snap.exists() ? snap.data() : {};
     const status = data.status || 'idle';
@@ -379,30 +380,32 @@ function setupAdmin() {
     currentFinalPrompt = data.finalPrompt || '';
     currentPreviewImage = data.finalImage || null;
 
-    const tb = $('toggle-btn');
-    if (status === 'idle') { tb.textContent = '▶ Comenzar cuento'; tb.disabled = false; }
-    else if (status === 'writing_open') { tb.textContent = '⏹ Cerrar y terminar cuento'; tb.disabled = false; }
-    else if (status === 'writing_closed') { tb.textContent = 'Cuento terminado'; tb.disabled = true; }
-    else if (status === 'published') { tb.textContent = 'Publicado'; tb.disabled = true; }
+    // Botones separados
+    const openBtn = $('open-btn'); const closeBtn = $('close-btn');
+    openBtn.disabled = (status !== 'idle');
+    closeBtn.disabled = (status !== 'writing_open');
+    openBtn.textContent = (status === 'idle') ? '▶ Comenzar cuento' : '▶ Comenzar cuento';
+    closeBtn.textContent = (status === 'writing_open') ? '⏹ Cerrar y terminar cuento' : '⏹ Cerrar y terminar cuento';
 
     $('state-info').textContent =
-      status === 'idle' ? 'Sin cuento activo.'
-      : status === 'writing_open' ? 'La escritura está ABIERTA.'
-      : status === 'writing_closed' ? 'Cuento CERRADO. Genera título, prompt e imagen.'
-      : 'Cuento PUBLICADO. Puedes seguir editándolo.';
+      status === 'idle' ? 'Estado: sin cuento activo.'
+      : status === 'writing_open' ? 'Estado: escritura ABIERTA.'
+      : status === 'writing_closed' ? 'Estado: cuento CERRADO. Genera título, prompt e imagen.'
+      : 'Estado: cuento PUBLICADO. Puedes seguir editándolo.';
 
     const showIllus = (status === 'writing_closed' || status === 'published');
     $('illustration-block').classList.toggle('hidden', !showIllus);
     $('edit-block').classList.toggle('hidden', !showIllus);
+
     if (showIllus) {
-      if (!$('edit-textarea').value || document.activeElement !== $('edit-textarea')) {
+      if (document.activeElement !== $('edit-textarea')) {
         $('edit-textarea').value = currentFinalStory;
       }
       if (!currentFinalPrompt) {
         currentFinalPrompt = buildPrompt(currentFinalStory, $('style-select').value);
       }
       $('prompt-display').value = currentFinalPrompt;
-      if (!$('title-input').value || document.activeElement !== $('title-input')) {
+      if (document.activeElement !== $('title-input')) {
         $('title-input').value = data.finalTitle || '';
       }
     }
@@ -412,54 +415,84 @@ function setupAdmin() {
       $('preview-block').classList.remove('hidden');
       $('publish-btn').disabled = (status === 'published');
       currentPreviewImage = data.finalImage;
-    } else if (status !== 'published') {
+    } else {
       $('preview-block').classList.add('hidden');
     }
 
-    listenAdminContributions(data.storyId, status);
-  });
-  unsubscribes.push(u);
+    // Vista en vivo del cuento
+    if (adminContribUnsub) { try { adminContribUnsub(); } catch (e) {} adminContribUnsub = null; }
+    if (!data.storyId) {
+      $('admin-story').textContent = '(sin cuento todavía)';
+    } else if (status === 'writing_closed' || status === 'published') {
+      $('admin-story').textContent = currentFinalStory || '(sin cuento todavía)';
+    } else if (status === 'idle') {
+      $('admin-story').textContent = '(sin cuento todavía)';
+    } else {
+      const q = query(collection(db, 'contributions'), orderBy('createdAt', 'asc'));
+      adminContribUnsub = onSnapshot(q, (s2) => {
+        const parts = [];
+        s2.forEach(d => {
+          const dd = d.data();
+          if (dd.storyId === data.storyId && dd.text) parts.push(dd.text);
+        });
+        $('admin-story').textContent = parts.join(' ') || '(esperando primeras palabras…)';
+      }, (err) => {
+        console.error('admin contrib error:', err);
+        $('admin-story').textContent = '(error al leer aportes)';
+      });
+    }
+  }, (err) => console.error('admin state error:', err));
+  unsubs.push(u);
+  unsubs.push(() => adminContribUnsub && adminContribUnsub());
 
-  // Toggle principal
-  $('toggle-btn').addEventListener('click', async () => {
+  // BOTÓN ABRIR
+  $('open-btn').addEventListener('click', async () => {
     const ref = doc(db, 'state', 'current');
     const snap = await getDoc(ref);
     const data = snap.exists() ? snap.data() : {};
-    const status = data.status || 'idle';
+    if ((data.status || 'idle') !== 'idle') return;
+    const storyId = newStoryId();
+    await setDoc(ref, {
+      status: 'writing_open', storyId,
+      finalStory: '', finalPrompt: '', finalTitle: '', finalImage: '',
+      finalStyle: $('style-select').value,
+      startedAt: serverTimestamp(), updatedAt: serverTimestamp()
+    }, { merge: true });
+    $('edit-textarea').value = ''; $('prompt-display').value = ''; $('title-input').value = '';
+    $('preview-block').classList.add('hidden');
+    $('gen-error').textContent = ''; $('gen-status').textContent = '';
+  });
 
-    if (status === 'idle') {
-      const storyId = newStoryId();
-      await setDoc(ref, {
-        status: 'writing_open', storyId,
-        finalStory: '', finalPrompt: '', finalTitle: '', finalImage: '', finalStyle: $('style-select').value,
-        startedAt: serverTimestamp(), updatedAt: serverTimestamp()
-      }, { merge: true });
-      $('edit-textarea').value = ''; $('prompt-display').value = ''; $('title-input').value = '';
-      $('preview-block').classList.add('hidden');
-      $('gen-error').textContent = ''; $('gen-status').textContent = '';
-    } else if (status === 'writing_open') {
-      const q = query(collection(db, 'contributions'),
-        where('storyId', '==', data.storyId), orderBy('createdAt', 'asc'));
-      const snapStory = await getDocs(q);
-      const parts = [];
-      snapStory.forEach(d => { if (d.data().text) parts.push(d.data().text); });
-      const story = parts.join(' ');
-      const prompt = buildPrompt(story, $('style-select').value);
-      await setDoc(ref, {
-        status: 'writing_closed', finalStory: story, finalPrompt: prompt,
-        closedAt: serverTimestamp(), updatedAt: serverTimestamp()
-      }, { merge: true });
-      currentFinalStory = story; currentFinalPrompt = prompt;
-    }
+  // BOTÓN CERRAR
+  $('close-btn').addEventListener('click', async () => {
+    if (!confirm('¿Cerrar y terminar el cuento? Después no se podrán añadir más palabras.')) return;
+    const ref = doc(db, 'state', 'current');
+    const snap = await getDoc(ref);
+    const data = snap.exists() ? snap.data() : {};
+    if ((data.status || '') !== 'writing_open') return;
+    const q = query(collection(db, 'contributions'), orderBy('createdAt', 'asc'));
+    const snapStory = await getDocs(q);
+    const parts = [];
+    snapStory.forEach(d => {
+      const dd = d.data();
+      if (dd.storyId === data.storyId && dd.text) parts.push(dd.text);
+    });
+    const story = parts.join(' ');
+    const prompt = buildPrompt(story, $('style-select').value);
+    await setDoc(ref, {
+      status: 'writing_closed', finalStory: story, finalPrompt: prompt,
+      closedAt: serverTimestamp(), updatedAt: serverTimestamp()
+    }, { merge: true });
+    currentFinalStory = story; currentFinalPrompt = prompt;
   });
 
   // Reiniciar
   $('reset-btn').addEventListener('click', async () => {
-    if (!confirm('¿Reiniciar? Se empezará un cuento desde cero. Los cuentos publicados quedarán guardados en la galería.')) return;
+    if (!confirm('¿Reiniciar? Se empezará un cuento nuevo. Los publicados quedan en la galería.')) return;
     await setDoc(doc(db, 'state', 'current'), {
       status: 'idle', storyId: newStoryId(),
-      finalStory: '', finalPrompt: '', finalTitle: '', finalImage: '', finalStyle: $('style-select').value,
-      updatedAt: serverTimestamp()
+      finalStory: '', finalPrompt: '', finalTitle: '', finalImage: '',
+      finalStyle: $('style-select').value, updatedAt: serverTimestamp()
     }, { merge: true });
     currentFinalStory = ''; currentFinalPrompt = ''; currentPreviewImage = null;
     $('edit-textarea').value = ''; $('prompt-display').value = ''; $('title-input').value = '';
@@ -470,37 +503,33 @@ function setupAdmin() {
   // Logout
   $('logout-btn').addEventListener('click', async () => {
     if (!confirm('¿Cerrar sesión del panel?')) return;
-    clearListeners();
+    clearAllListeners();
     await signOut(auth);
     try { await signInAnonymously(auth); } catch (e) {}
   });
 
-  // Guardar edición del texto
+  // Guardar edición
   $('save-edit-btn').addEventListener('click', async () => {
     const newText = $('edit-textarea').value.trim();
     const newPrompt = buildPrompt(newText, $('style-select').value);
     const ref = doc(db, 'state', 'current');
     const snap = await getDoc(ref);
     const status = snap.exists() ? snap.data().status : 'writing_closed';
-    const update = { finalStory: newText, finalPrompt: newPrompt, updatedAt: serverTimestamp() };
-    await setDoc(ref, update, { merge: true });
-    // Si ya está publicado, actualizar también en la colección stories
+    await setDoc(ref, { finalStory: newText, finalPrompt: newPrompt, updatedAt: serverTimestamp() }, { merge: true });
     if (status === 'published' && currentStoryId) {
       await setDoc(doc(db, 'stories', currentStoryId), {
-        story: newText, title: $('title-input').value.trim() || (snap.data().finalTitle || ''),
-        updatedAt: serverTimestamp()
+        story: newText, updatedAt: serverTimestamp()
       }, { merge: true });
+      galleryLoaded = false;
     }
     currentFinalStory = newText; currentFinalPrompt = newPrompt;
     $('prompt-display').value = newPrompt;
     $('edit-feedback').textContent = '✅ Guardado.';
     setTimeout(() => { $('edit-feedback').textContent = ''; }, 3000);
   });
-  $('cancel-edit-btn').addEventListener('click', () => {
-    $('edit-textarea').value = currentFinalStory;
-  });
+  $('cancel-edit-btn').addEventListener('click', () => { $('edit-textarea').value = currentFinalStory; });
 
-  // Guardar título manualmente
+  // Guardar título
   $('title-input').addEventListener('change', async () => {
     const newTitle = $('title-input').value.trim();
     const ref = doc(db, 'state', 'current');
@@ -508,13 +537,12 @@ function setupAdmin() {
     const status = snap.exists() ? snap.data().status : 'writing_closed';
     await setDoc(ref, { finalTitle: newTitle, updatedAt: serverTimestamp() }, { merge: true });
     if (status === 'published' && currentStoryId) {
-      await setDoc(doc(db, 'stories', currentStoryId), {
-        title: newTitle, updatedAt: serverTimestamp()
-      }, { merge: true });
+      await setDoc(doc(db, 'stories', currentStoryId), { title: newTitle, updatedAt: serverTimestamp() }, { merge: true });
+      galleryLoaded = false;
     }
   });
 
-  // Generar título con IA
+  // Generar título
   $('gen-title-btn').addEventListener('click', async () => {
     const story = $('edit-textarea').value.trim() || currentFinalStory;
     if (!story) { $('title-feedback').textContent = 'Primero debe haber un cuento.'; return; }
@@ -528,27 +556,24 @@ function setupAdmin() {
       const status = snap.exists() ? snap.data().status : 'writing_closed';
       await setDoc(ref, { finalTitle: title, updatedAt: serverTimestamp() }, { merge: true });
       if (status === 'published' && currentStoryId) {
-        await setDoc(doc(db, 'stories', currentStoryId), {
-          title, updatedAt: serverTimestamp()
-        }, { merge: true });
+        await setDoc(doc(db, 'stories', currentStoryId), { title, updatedAt: serverTimestamp() }, { merge: true });
+        galleryLoaded = false;
       }
-      $('title-feedback').textContent = '✅ Título generado. Puedes editarlo arriba.';
+      $('title-feedback').textContent = '✅ Título generado.';
     } catch (e) {
       console.error(e);
-      $('title-feedback').textContent = 'No se pudo generar el título. Escribe uno a mano.';
+      $('title-feedback').textContent = 'No se pudo generar. Escribe uno a mano.';
     } finally {
       $('gen-title-btn').disabled = false;
       setTimeout(() => { $('title-feedback').textContent = ''; }, 5000);
     }
   });
 
-  // Estilo
   $('style-select').addEventListener('change', () => {
     currentFinalPrompt = buildPrompt(currentFinalStory, $('style-select').value);
     $('prompt-display').value = currentFinalPrompt;
   });
 
-  // Copiar prompt
   $('copy-prompt-btn').addEventListener('click', async () => {
     const text = $('prompt-display').value;
     try { await navigator.clipboard.writeText(text); }
@@ -557,7 +582,6 @@ function setupAdmin() {
     setTimeout(() => { $('copy-feedback').textContent = ''; }, 6000);
   });
 
-  // Generar imagen
   $('gen-pollinations-btn').addEventListener('click', async () => {
     $('gen-error').textContent = '';
     $('gen-status').textContent = '⏳ Generando con Pollinations… (10-30 s)';
@@ -574,7 +598,6 @@ function setupAdmin() {
     } finally { $('gen-pollinations-btn').disabled = false; }
   });
 
-  // Subir imagen
   $('upload-btn').addEventListener('click', () => $('upload-input').click());
   $('upload-input').addEventListener('change', async (e) => {
     const file = e.target.files[0]; if (!file) return;
@@ -587,20 +610,17 @@ function setupAdmin() {
     e.target.value = '';
   });
 
-  // Regenerar
   $('regen-btn').addEventListener('click', () => {
     if (currentPreviewSource === 'manual') $('upload-input').click();
     else $('gen-pollinations-btn').click();
   });
 
-  // Publicar
   $('publish-btn').addEventListener('click', async () => {
     if (!currentPreviewImage) return;
     if (!confirm('¿Publicar el cuento y la imagen para todos?')) return;
     $('publish-btn').disabled = true; $('gen-status').textContent = '⏳ Publicando…';
     const title = $('title-input').value.trim() || 'Cuento sin título';
     try {
-      // 1) Actualizar el estado actual (para el que está viendo "En vivo")
       await setDoc(doc(db, 'state', 'current'), {
         status: 'published',
         finalStory: currentFinalStory,
@@ -611,42 +631,19 @@ function setupAdmin() {
         publishedAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       }, { merge: true });
-      // 2) Guardar copia permanente en la galería
       await setDoc(doc(db, 'stories', currentStoryId), {
-        title,
-        story: currentFinalStory,
-        prompt: currentFinalPrompt,
-        image: currentPreviewImage,
-        style: $('style-select').value,
+        title, story: currentFinalStory, prompt: currentFinalPrompt,
+        image: currentPreviewImage, style: $('style-select').value,
         storyId: currentStoryId,
-        publishedAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+        publishedAt: serverTimestamp(), updatedAt: serverTimestamp()
       });
-      $('gen-status').textContent = '✅ Publicado. Aparece en vivo y en la galería.';
+      galleryLoaded = false;
+      $('gen-status').textContent = '✅ Publicado.';
     } catch (e) {
       console.error(e);
       $('gen-error').textContent = 'Error al publicar: ' + e.message;
       $('publish-btn').disabled = false;
     }
-  });
-}
-
-function listenAdminContributions(storyId, status) {
-  if (adminContribUnsub) { try { adminContribUnsub(); } catch (e) {} adminContribUnsub = null; }
-  if (!storyId) { $('admin-story').textContent = '(sin cuento todavía)'; return; }
-  if (status === 'writing_closed' || status === 'published') {
-    $('admin-story').textContent = currentFinalStory || '(sin cuento todavía)'; return;
-  }
-  if (status === 'idle') { $('admin-story').textContent = '(sin cuento todavía)'; return; }
-  const q = query(
-    collection(db, 'contributions'),
-    where('storyId', '==', storyId),
-    orderBy('createdAt', 'asc')
-  );
-  adminContribUnsub = onSnapshot(q, (snap) => {
-    const parts = [];
-    snap.forEach(d => { if (d.data().text) parts.push(d.data().text); });
-    $('admin-story').textContent = parts.join(' ') || '(esperando primeras palabras…)';
   });
 }
 
