@@ -18,44 +18,83 @@
     <button id="admin-login-btn" class="link-btn">Acceso administrador</button>
   </section>
 
-  <section id="writing-room" class="screen hidden">
-    <header class="room-header">
-      <span id="my-nickname" class="badge"></span>
-      <span id="status-badge" class="badge"></span>
-    </header>
-    <div id="story-container" class="story"></div>
-    <div id="writing-controls" class="writing-controls hidden">
-      <input id="word-input" type="text" placeholder="Máximo 3 palabras" disabled autocomplete="off" />
-      <button id="send-btn" disabled>Enviar</button>
-      <p id="cooldown-msg" class="info"></p>
-      <p id="input-error" class="error"></p>
-    </div>
-    <div id="illustrating-msg" class="illustrating hidden">
-      <p>🎨 Ilustrando el cuento…</p>
-      <p class="info">Espera a que el administrador publique la imagen.</p>
-    </div>
-  </section>
+  <div id="main-app" class="hidden">
+    <nav class="tabs">
+      <button class="tab active" data-tab="live">📝 En vivo</button>
+      <button class="tab" data-tab="gallery">📚 Cuentos</button>
+    </nav>
 
-  <section id="padlet-screen" class="screen hidden">
-    <h1>📖 Nuestro cuento</h1>
-    <div class="padlet-card">
-      <img id="padlet-image" alt="Ilustración del cuento" />
-      <div id="padlet-story" class="padlet-story"></div>
-    </div>
-  </section>
+    <section id="tab-live" class="tab-content">
+      <div id="writing-room" class="screen-inner hidden">
+        <header class="room-header">
+          <span id="my-nickname" class="badge"></span>
+          <span id="status-badge" class="badge"></span>
+        </header>
+        <div id="story-container" class="story"></div>
+        <div id="writing-controls" class="writing-controls hidden">
+          <input id="word-input" type="text" placeholder="Máximo 3 palabras" disabled autocomplete="off" />
+          <button id="send-btn" disabled>Enviar</button>
+          <p id="cooldown-msg" class="info"></p>
+          <p id="input-error" class="error"></p>
+        </div>
+        <div id="idle-msg" class="illustrating hidden">
+          <p>⏳ El administrador aún no inició el cuento.</p>
+        </div>
+        <div id="illustrating-msg" class="illustrating hidden">
+          <p>🎨 Ilustrando el cuento…</p>
+          <p class="info">Espera a que el administrador publique la imagen.</p>
+        </div>
+      </div>
+
+      <div id="padlet-current" class="hidden">
+        <h1 id="padlet-title" class="story-title"></h1>
+        <div class="padlet-card">
+          <img id="padlet-image" alt="Ilustración del cuento" />
+          <div id="padlet-story" class="padlet-story"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-gallery" class="tab-content hidden">
+      <h1>📚 Todos los cuentos</h1>
+      <p class="info">Aquí se guardan todos los cuentos creados.</p>
+      <div id="gallery-grid" class="gallery-grid"></div>
+      <p id="gallery-empty" class="info hidden">Todavía no hay cuentos publicados.</p>
+    </section>
+  </div>
 
   <section id="admin-panel" class="screen hidden">
     <h2>Panel de administrador</h2>
     <p class="info">Conectado como <span id="admin-email"></span></p>
-    <button id="toggle-btn" class="primary">Abrir escritura</button>
+    <div class="button-row">
+      <button id="toggle-btn" class="primary">Comenzar cuento</button>
+      <button id="reset-btn" class="secondary">🗑️ Reiniciar todo</button>
+      <button id="logout-btn" class="secondary">↩︎ Cerrar sesión</button>
+    </div>
+    <button id="view-public-btn" class="secondary">👁️ Ver como público</button>
     <p id="state-info" class="info"></p>
 
     <hr class="divider">
 
-    <h3>Cuento actual</h3>
+    <h3>Cuento actual (vista en vivo)</h3>
     <div id="admin-story" class="story"></div>
 
+    <div id="edit-block" class="hidden">
+      <h3>✏️ Editar cuento manualmente</h3>
+      <textarea id="edit-textarea" rows="6"></textarea>
+      <div class="button-row">
+        <button id="save-edit-btn" class="primary">💾 Guardar cambios</button>
+        <button id="cancel-edit-btn" class="secondary">Cancelar</button>
+      </div>
+      <p id="edit-feedback" class="info"></p>
+    </div>
+
     <div id="illustration-block" class="hidden">
+      <h3>🏷️ Título del cuento</h3>
+      <input id="title-input" type="text" placeholder="El título aparecerá aquí" maxlength="80" />
+      <button id="gen-title-btn" class="secondary">🤖 Generar título con IA</button>
+      <p id="title-feedback" class="info"></p>
+
       <h3>Prompt de ilustración</h3>
       <textarea id="prompt-display" readonly rows="5"></textarea>
       <button id="copy-prompt-btn" class="secondary">📋 Copiar prompt (Plan C)</button>
