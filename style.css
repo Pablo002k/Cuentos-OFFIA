@@ -57,9 +57,7 @@ button.link-btn:hover { color: var(--primary); background: transparent; }
   background: transparent; color: var(--muted); font-weight: 600;
   border: 1px solid transparent; border-bottom: none;
 }
-.tab.active {
-  background: var(--card); color: var(--fg); border-color: var(--border);
-}
+.tab.active { background: var(--card); color: var(--fg); border-color: var(--border); }
 .tab-content { padding-top: 16px; }
 
 .room-header { display: flex; justify-content: space-between; margin-bottom: 16px; gap: 8px; flex-wrap: wrap; }
