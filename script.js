@@ -5,7 +5,7 @@ import {
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 import {
   getFirestore, doc, getDoc, setDoc, collection, query, orderBy,
-  onSnapshot, serverTimestamp, runTransaction, writeBatch, getDocs
+  onSnapshot, serverTimestamp, runTransaction, writeBatch, getDocs, where
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
 /* ⚠️ CONSERVA ESTO */
@@ -25,11 +25,12 @@ const MAX_NICKNAME_LENGTH = 20;
 const IMAGE_MAX_SIZE = 1024;
 const MAX_IMAGE_CHARS = 700000; // tope de tamaño de la imagen (Firestore permite 1 MB por documento)
 const STORY_PROMPT_LIMIT = 600;
+const REACTION_COOLDOWN = 60;
 
 const STYLES = {
-  cartoon3d: '3D animated family movie style, expressive characters, warm lighting, vibrant colors',
-  anime: 'anime style, clean lines, vivid colors, expressive characters',
-  sketch: 'artistic pencil sketch, visible strokes, soft shading, hand-drawn'
+  cartoon3d: '3D animated feature-film look, expressive characters, soft cinematic lighting, rich detail, vibrant colors',
+  anime: 'high-quality anime illustration, clean line art, vivid colors, detailed background, cinematic lighting',
+  sketch: 'detailed artistic pencil sketch, fine linework, cross-hatching shading, hand-drawn on paper'
 };
 const STYLE_LABELS = { cartoon3d: 'animación 3D', anime: 'anime', sketch: 'boceto a lápiz' };
 const STYLE_BY_LETTER = { A: 'cartoon3d', B: 'anime', C: 'sketch' };
@@ -50,7 +51,13 @@ let adminStatus = 'idle';
 let serverImage = '';      // imagen que ya está guardada en el servidor
 let pendingImage = null;   // imagen elegida en el panel que todavía no se publicó
 let pendingSource = null;  // 'pollinations' | 'manual'
-let lastEngine = 'flux';
+let lastEngine = { model: 'flux', useKey: false };
+let analysisStyle = null;
+let reactUnsub = null;
+let reactKey = '';
+let reactionCounts = {};
+let reactionsReady = false;
+let reactCooldownTimer = null;
 let prevPublicStatus = null;
 let publicContribUnsub = null;
 let publicListenKey = '';
@@ -83,7 +90,8 @@ function clearAllListeners() {
   unsubs = [];
   if (publicContribUnsub) { try { publicContribUnsub(); } catch (e) {} publicContribUnsub = null; }
   if (adminContribUnsub) { try { adminContribUnsub(); } catch (e) {} adminContribUnsub = null; }
-  publicListenKey = ''; adminListenKey = '';
+  if (reactUnsub) { try { reactUnsub(); } catch (e) {} reactUnsub = null; }
+  publicListenKey = ''; adminListenKey = ''; reactKey = '';
 }
 function newStoryId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -117,29 +125,43 @@ function buildFallbackPrompt(story, styleKey) {
   return `Illustration for a short story (written in Spanish). Story: "${trimmed}". Represent the central scene or idea of the story with its characters and environment. Style: ${style}. Clear composition, expressive colors, no text or letters in the image.`;
 }
 function buildImagePrompt(scene, styleKey) {
-  return `Illustration for a short story. Scene: ${scene}. Style: ${STYLES[styleKey] || STYLES.cartoon3d}. Clear composition, expressive colors, no text or letters in the image.`;
+  return `Illustration for a short story. ${scene} Style: ${STYLES[styleKey] || STYLES.cartoon3d}. Highly detailed, clear composition, expressive colors, no text or letters in the image.`;
 }
-// Prompt para copiar y usar en cualquier IA externa (Plan C): lleva el cuento completo
+// Prompt largo para copiar a otra IA cuando todavía no hay análisis: lleva el cuento completo
 function buildCopyPrompt(story, styleKey) {
   const styleText = styleKey
     ? `Style: ${STYLES[styleKey]}.`
     : 'Style: choose the one that best fits the tone of the story and use only that one: 3D animated family movie style (for childish or tender stories), anime style (for landscapes, adventure or fantasy) or artistic pencil sketch (for serious or dramatic stories).';
-  return `Create an illustration for this short story (it is written in Spanish). Story: "${story}". Represent the central scene or idea of the story with its characters and environment. ${styleText} Clear composition, expressive colors, no text or letters in the image.`;
+  return `Create an illustration for this short story (it is written in Spanish). Story: "${story}". Represent the central scene or idea of the story with its characters and environment. ${styleText} Highly detailed, clear composition, expressive colors, no text or letters in the image.`;
 }
-function sceneAnalysisPrompt(story) {
-  return `You help illustrate a short story written word by word by many different people, so it may sound odd or incoherent. It is in Spanish.
-Answer with exactly two lines and nothing else:
-STYLE: A, B or C (A = 3D animated family-movie look, for childish, tender or funny stories; B = anime, for landscapes, adventure or fantasy; C = pencil sketch, for serious, dark or melancholic stories)
-SCENE: one sentence in English (maximum 45 words) describing ONE concrete scene to draw: main characters or creatures, place, action and mood, using only elements that appear in the story.
-Story: "${story.slice(0, 1500)}"`;
+function analysisPrompt(story) {
+  return `Eres un asistente que prepara la ilustración de un cuento en español escrito palabra por palabra por muchas personas, por lo que puede tener errores de ortografía, frases sueltas o escenas sin lógica. Tu trabajo es entenderlo con la máxima fidelidad, sin inventar nada que no esté en el texto.
+Responde EXACTAMENTE con estas 4 etiquetas, cada una en su propia línea y sin texto extra:
+INTERPRETACION: 2 a 4 frases en español que expliquen qué cuenta el texto (personajes, objetos, lugares, acciones y ambiente). Corrige mentalmente la ortografía. Si el texto es absurdo o incoherente, descríbelo tal cual, uniendo los elementos que aparecen, sin agregar tramas ni datos nuevos.
+TITULO: un título corto y llamativo en español (máximo 6 palabras) que use solo elementos del texto.
+ESTILO: A, B o C (A = animación 3D de película familiar, para cuentos infantiles, tiernos o graciosos; B = anime, para paisajes, aventura o fantasía; C = boceto a lápiz, para cuentos serios, oscuros o melancólicos).
+ESCENA: descripción en inglés de 60 a 90 palabras, lista para un generador de imágenes: una sola escena concreta con los personajes y objetos principales (aspecto, tamaño, colores), el lugar, la acción, el ambiente, la iluminación y la composición. Usa solo elementos presentes en el texto o claramente implícitos. Sin texto ni letras en la imagen.
+Cuento: "${story.slice(0, 2000)}"`;
 }
-function parseScene(answer) {
-  const sceneMatch = answer.match(/SCENE:\s*([\s\S]+)/i);
-  if (!sceneMatch) throw new Error('la IA respondió algo inesperado');
-  const scene = sceneMatch[1].trim().replace(/\s+/g, ' ').slice(0, 400);
-  const styleMatch = answer.match(/STYLE:\s*([ABC])/i);
-  const style = styleMatch ? STYLE_BY_LETTER[styleMatch[1].toUpperCase()] : null;
-  return { scene, style };
+function parseAnalysis(answer) {
+  const re = /^[\s*#]*(INTERPRETACI[ÓO]N|T[ÍI]TULO|ESTILO|ESCENA)[\s*]*:[\s*]*/gim;
+  const marks = []; let m;
+  while ((m = re.exec(answer))) {
+    marks.push({ key: m[1].toUpperCase().replace('Ó', 'O').replace('Í', 'I'), start: m.index, end: re.lastIndex });
+  }
+  const out = {};
+  marks.forEach((mk, i) => {
+    const to = i + 1 < marks.length ? marks[i + 1].start : answer.length;
+    out[mk.key] = answer.slice(mk.end, to).replace(/\*+/g, '').replace(/\s+/g, ' ').trim();
+  });
+  if (!out.ESCENA) throw new Error('la IA respondió algo inesperado');
+  const letter = (out.ESTILO || '').match(/[ABC]/i);
+  return {
+    interp: out.INTERPRETACION || '',
+    title: (out.TITULO || '').replace(/^["'«“]+|["'»”.]+$/g, '').slice(0, 80),
+    style: letter ? STYLE_BY_LETTER[letter[0].toUpperCase()] : null,
+    scene: out.ESCENA.slice(0, 900)
+  };
 }
 
 /* ============ CLAVES DE IA (solo en el navegador del administrador) ============ */
@@ -151,34 +173,55 @@ function saveKeys(k) {
   try { localStorage.setItem(KEYS_STORAGE, JSON.stringify(k)); } catch (e) {}
 }
 
-/* ============ IA DE TEXTO (título y análisis del cuento) ============ */
-let geminiModelCache = null;
-async function pickGeminiModel(key) {
-  if (geminiModelCache) return geminiModelCache;
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=100&key=${encodeURIComponent(key)}`);
+/* ============ IA DE TEXTO (análisis, título) ============ */
+const GEMINI_PREFERRED = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+let geminiModelsCache = null;
+let geminiWorking = null;
+async function geminiModelList(key) {
+  if (geminiModelsCache) return geminiModelsCache;
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(key)}`);
   if (!res.ok) throw new Error(`la clave no sirvió (${res.status})`);
   const data = await res.json();
-  const names = (data.models || [])
+  const all = (data.models || [])
     .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
     .map(m => m.name.replace('models/', ''))
-    .filter(n => /^gemini-.*flash/.test(n) && !/(image|tts|live|audio|embedding|robotics|computer|vision)/.test(n))
-    .sort().reverse();
-  if (!names.length) throw new Error('no hay un modelo de texto disponible');
-  geminiModelCache = names[0];
-  return geminiModelCache;
+    .filter(n => /^gemini-/.test(n) && !/(image|tts|live|audio|embedding|robotics|computer|vision|thinking|exp)/.test(n));
+  const pref = GEMINI_PREFERRED.filter(n => all.includes(n));
+  const rest = all.filter(n => /flash/.test(n) && !pref.includes(n)).sort();
+  geminiModelsCache = [...pref, ...rest];
+  if (!geminiModelsCache.length) throw new Error('no hay modelos de texto disponibles');
+  return geminiModelsCache;
 }
-async function askGemini(prompt, key) {
-  const model = await pickGeminiModel(key);
+async function callGemini(model, key, prompt) {
   const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.4 } })
   });
-  if (!res.ok) throw new Error(`Gemini respondió ${res.status}`);
-  const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('').trim();
-  if (!text) throw new Error('Gemini no devolvió texto');
-  return text;
+  let body = {};
+  try { body = await res.json(); } catch (e) {}
+  if (res.ok) {
+    const text = (body.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('').trim();
+    return { ok: !!text, status: res.status, text, msg: text ? '' : 'respuesta vacía (posible bloqueo de seguridad)' };
+  }
+  return { ok: false, status: res.status, text: '', msg: (body.error && body.error.message) || '' };
+}
+// Prueba varios modelos de Gemini: si uno da 429 (sin cuota) pasa al siguiente.
+async function askGemini(prompt, key) {
+  const models = await geminiModelList(key);
+  const order = geminiWorking ? [geminiWorking, ...models.filter(m => m !== geminiWorking)] : models;
+  const errs = [];
+  for (const m of order.slice(0, 6)) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const r = await callGemini(m, key, prompt);
+      if (r.ok) { geminiWorking = m; return r.text; }
+      if (r.status === 401 || r.status === 403) throw new Error(`clave rechazada (${r.status}) ${r.msg.slice(0, 100)}`);
+      if (r.status === 429 && attempt === 1 && !/limit:\s*0/i.test(r.msg)) { await wait(5000); continue; }
+      errs.push(`${m}: ${r.status || 'sin respuesta'}${r.msg ? ' (' + r.msg.slice(0, 90) + ')' : ''}`);
+      break;
+    }
+  }
+  throw new Error(errs.join(' · '));
 }
 async function askPollinationsText(prompt, key) {
   const enc = encodeURIComponent(prompt);
@@ -191,7 +234,7 @@ async function askPollinationsText(prompt, key) {
   if (!text) throw new Error('Pollinations no devolvió texto');
   return text;
 }
-// Prueba, en orden: Gemini (si hay clave), Pollinations con clave, Pollinations sin clave.
+// Orden: Gemini (si hay clave), Pollinations con clave, Pollinations sin clave.
 async function askTextAI(prompt) {
   const keys = getKeys();
   const errors = [];
@@ -207,8 +250,11 @@ async function askTextAI(prompt) {
   catch (e) { errors.push('Pollinations sin clave: ' + e.message); }
   throw new Error(errors.join(' | '));
 }
-async function generateTitleWithAI(story) {
-  const prompt = `Genera un título corto, llamativo y creativo (máximo 6 palabras) para este cuento. Responde SOLO con el título, sin comillas, sin punto final y sin explicaciones. Cuento: "${story.slice(0, 800)}"`;
+async function generateTitleWithAI(story, interp) {
+  const base = interp
+    ? `Resumen fiel del cuento: ${interp}\nTexto original: "${story.slice(0, 800)}"`
+    : `Cuento: "${story.slice(0, 800)}"`;
+  const prompt = `Genera un título corto y llamativo en español (máximo 6 palabras) para este cuento. Usa SOLO personajes, objetos y lugares que aparezcan en el texto: no inventes nada nuevo. Responde únicamente con el título, sin comillas ni punto final.\n${base}`;
   let title = (await askTextAI(prompt)).split('\n')[0].trim();
   title = title.replace(/^(t[ií]tulo\s*:\s*)/i, '').replace(/^["'«»“”*#\s]+|["'«»“”*.\s]+$/g, '').trim();
   if (title.length > 80) title = title.slice(0, 80);
@@ -244,11 +290,26 @@ async function compressBlobToDataURL(blob) {
     throw new Error('La imagen pesa demasiado');
   } finally { URL.revokeObjectURL(url); }
 }
-async function generateWithPollinations(prompt, model, onStatus) {
+async function generateWithPollinations(prompt, model, onStatus, key) {
   const seed = Math.floor(Math.random() * 1000000);
-  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&seed=${seed}&nologo=true&model=${model}`;
+  const enc = encodeURIComponent(prompt);
+  const legacy = (m) => `https://image.pollinations.ai/prompt/${enc}?width=1024&height=1024&seed=${seed}&nologo=true&model=${m}`;
+  if (key) {
+    // Modelo elegido con clave: si falla, se cae al motor gratuito
+    try {
+      const res = await fetch(`https://gen.pollinations.ai/image/${enc}?model=${encodeURIComponent(model)}&width=1024&height=1024&seed=${seed}&key=${encodeURIComponent(key)}`);
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob.type.startsWith('image/')) return await compressBlobToDataURL(blob);
+      }
+      onStatus && onStatus(`⚠️ El modelo "${model}" respondió ${res.status}. Probando con el motor gratuito…`);
+    } catch (e) {
+      onStatus && onStatus(`⚠️ El modelo "${model}" falló (${e.message}). Probando con el motor gratuito…`);
+    }
+    model = 'flux';
+  }
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const res = await fetch(url);
+    const res = await fetch(legacy(model));
     if (res.status === 429 && attempt < 3) {
       onStatus && onStatus('⏳ Pollinations pide esperar un momento… reintentando');
       await wait(16000);
@@ -355,24 +416,120 @@ async function ensureStateDoc() {
 }
 
 /* ============ VISTA PÚBLICA ============ */
+const REACTION_ICONS = { heart: '❤️', laugh: '😂', like: '👍', dislike: '👎', sad: '😢', clap: '👏', fire: '🔥', wow: '😮' };
+const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// Cuento publicado. Con animate=true: el título entra letra a letra y el cuento se "reescribe" palabra a palabra.
+function renderPublished(data, animate) {
+  const title = data.finalTitle || '';
+  const story = data.finalStory || '';
+  const t = $('padlet-title'), s = $('padlet-story');
+  t.textContent = ''; s.textContent = '';
+  t.setAttribute('aria-label', title);
+  if (!animate || reducedMotion()) { t.textContent = title; s.textContent = story; return; }
+  let n = 0;
+  const titleWords = title.split(' ');
+  titleWords.forEach((w, wi) => {
+    const ws = document.createElement('span'); ws.className = 'tw';
+    [...w].forEach(ch => {
+      const c = document.createElement('span'); c.className = 'ch'; c.textContent = ch;
+      c.style.animationDelay = (0.4 + n * 0.035) + 's'; n++; ws.appendChild(c);
+    });
+    t.appendChild(ws);
+    if (wi < titleWords.length - 1) t.appendChild(document.createTextNode(' '));
+  });
+  const words = story.split(/\s+/).filter(Boolean);
+  const step = Math.min(0.07, 3 / Math.max(words.length, 1));
+  words.forEach((w, i) => {
+    const sp = document.createElement('span'); sp.className = 'pw'; sp.textContent = w + ' ';
+    sp.style.animationDelay = (1.3 + i * step) + 's'; s.appendChild(sp);
+  });
+}
 function playReveal() {
   const p = $('padlet-current');
   p.classList.remove('reveal'); void p.offsetWidth; p.classList.add('reveal');
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  const box = document.createElement('div');
-  box.className = 'confetti';
-  const colors = ['#ffb84d', '#ff4f8b', '#3ddbb0', '#cfc8f5', '#fff9f0'];
-  for (let i = 0; i < 28; i++) {
-    const c = document.createElement('i');
-    c.style.setProperty('--x', (Math.random() * 100) + 'vw');
-    c.style.setProperty('--c', colors[i % colors.length]);
-    c.style.setProperty('--r', Math.floor(Math.random() * 360) + 'deg');
-    c.style.animationDuration = (2.2 + Math.random() * 1.6) + 's';
-    c.style.animationDelay = (Math.random() * 0.5) + 's';
-    box.appendChild(c);
+  if (reducedMotion()) return;
+  const b = document.createElement('div'); b.className = 'burst';
+  document.body.appendChild(b);
+  setTimeout(() => b.remove(), 2000);
+}
+
+/* --- Reacciones --- */
+function floatEmoji(key) {
+  const layer = $('fx-layer');
+  if (!layer || layer.children.length > 24) return;
+  const el = document.createElement('span');
+  el.className = 'fx fx-' + key;
+  el.textContent = REACTION_ICONS[key] || '✨';
+  el.style.left = (8 + Math.random() * 80) + 'vw';
+  el.addEventListener('animationend', () => el.remove());
+  layer.appendChild(el);
+}
+function updateReactionCounts() {
+  document.querySelectorAll('.react-btn').forEach(b => {
+    const n = reactionCounts[b.dataset.react] || 0;
+    b.querySelector('.count').textContent = n > 0 ? n : '';
+  });
+}
+function setReactionButtons(disabled) {
+  document.querySelectorAll('.react-btn').forEach(b => { b.disabled = disabled; });
+}
+function startReactCooldown(seconds) {
+  let remaining = Math.ceil(seconds);
+  const msg = $('reaction-msg');
+  setReactionButtons(true);
+  if (reactCooldownTimer) clearInterval(reactCooldownTimer);
+  const tick = () => {
+    if (remaining <= 0) {
+      clearInterval(reactCooldownTimer); reactCooldownTimer = null;
+      msg.textContent = 'Reacciona cuando quieras.';
+      setReactionButtons(false);
+      return;
+    }
+    msg.textContent = `Podrás reaccionar de nuevo en ${remaining} s`;
+    remaining--;
+  };
+  tick(); reactCooldownTimer = setInterval(tick, 1000);
+}
+async function sendReaction(key) {
+  if (reactCooldownTimer || !currentStoryId || !currentUser) return;
+  floatEmoji(key);
+  startReactCooldown(REACTION_COOLDOWN);
+  try {
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'reactionLimits', currentUser.uid), { lastAt: serverTimestamp() });
+    batch.set(doc(collection(db, 'reactions')), {
+      uid: currentUser.uid, emoji: key, storyId: currentStoryId, createdAt: serverTimestamp()
+    });
+    await batch.commit();
+  } catch (e) {
+    console.error(e);
+    clearInterval(reactCooldownTimer); reactCooldownTimer = null;
+    setReactionButtons(false);
+    $('reaction-msg').textContent = 'No se pudo enviar la reacción. Inténtalo de nuevo en un momento.';
   }
-  document.body.appendChild(box);
-  setTimeout(() => box.remove(), 4800);
+}
+document.querySelectorAll('.react-btn').forEach(b => b.addEventListener('click', () => sendReaction(b.dataset.react)));
+
+function listenReactions(storyId, isPublished) {
+  const k = `${storyId}|${isPublished}`;
+  if (k === reactKey) return;
+  reactKey = k;
+  if (reactUnsub) { try { reactUnsub(); } catch (e) {} reactUnsub = null; }
+  reactionCounts = {}; reactionsReady = false; updateReactionCounts();
+  if (!storyId || !isPublished) return;
+  reactUnsub = onSnapshot(query(collection(db, 'reactions'), where('storyId', '==', storyId)), (snap) => {
+    const counts = {};
+    snap.forEach(d => { const e = d.data().emoji; counts[e] = (counts[e] || 0) + 1; });
+    reactionCounts = counts; updateReactionCounts();
+    if (reactionsReady) {
+      snap.docChanges().forEach(ch => {
+        const d = ch.doc.data();
+        if (ch.type === 'added' && d.uid !== (currentUser && currentUser.uid) && !ch.doc.metadata.hasPendingWrites) floatEmoji(d.emoji);
+      });
+    }
+    reactionsReady = true;
+  }, (err) => console.error('reactions error:', err));
 }
 
 async function restoreCooldown() {
@@ -382,6 +539,14 @@ async function restoreCooldown() {
     if (t && t.toDate) {
       const remaining = COOLDOWN_SECONDS - (Date.now() - t.toDate().getTime()) / 1000;
       if (remaining > 1) startCooldown(remaining);
+    }
+  } catch (e) {}
+  try {
+    const r = await getDoc(doc(db, 'reactionLimits', currentUser.uid));
+    const t = r.exists() ? r.data().lastAt : null;
+    if (t && t.toDate) {
+      const remaining = REACTION_COOLDOWN - (Date.now() - t.toDate().getTime()) / 1000;
+      if (remaining > 1) startReactCooldown(remaining);
     }
   } catch (e) {}
 }
@@ -403,10 +568,10 @@ function setupPublicView() {
     $('padlet-current').classList.toggle('hidden', !isPublished);
 
     if (isPublished) {
-      $('padlet-title').textContent = data.finalTitle || '';
-      $('padlet-story').textContent = data.finalStory || '';
+      const first = !!prevPublicStatus && prevPublicStatus !== 'published';
+      renderPublished(data, first);
       $('padlet-image').src = data.finalImage || '';
-      if (prevPublicStatus && prevPublicStatus !== 'published') playReveal();
+      if (first) playReveal();
     } else {
       const badge = $('status-badge');
       badge.textContent = isOpen ? 'Escritura abierta' : isIdle ? 'Esperando inicio' : 'Cuento terminado';
@@ -423,6 +588,7 @@ function setupPublicView() {
     }
     prevPublicStatus = status;
     listenContributions(data.storyId, isPublished);
+    listenReactions(data.storyId, isPublished);
   }, (err) => console.error('state snapshot error:', err));
   unsubs.push(u);
 }
@@ -548,6 +714,19 @@ function startCooldown(seconds) {
 }
 
 /* ============ PANEL ADMIN ============ */
+function currentStyleKey() {
+  const sv = $('style-select').value;
+  return sv !== 'auto' ? sv : (analysisStyle || null);
+}
+function computeFinalPrompt() {
+  const scene = $('scene-input').value.trim();
+  const sk = currentStyleKey();
+  return scene ? buildImagePrompt(scene, sk || 'cartoon3d') : buildCopyPrompt(currentFinalStory, sk);
+}
+function refreshPromptDisplay() {
+  currentFinalPrompt = computeFinalPrompt();
+  $('prompt-display').value = currentFinalPrompt;
+}
 function updatePublishButton() {
   const btn = $('publish-btn');
   const has = !!(pendingImage || serverImage);
@@ -565,53 +744,117 @@ function showPreview(dataURL, source) {
 }
 function setGenBusy(busy) {
   ['gen-flux-btn', 'gen-turbo-btn', 'regen-btn'].forEach(id => { $(id).disabled = busy; });
+  $('gen-pol-btn').disabled = busy || $('pol-model').disabled;
 }
 async function saveTitleEverywhere(title) {
-  const ref = doc(db, 'state', 'current');
-  await setDoc(ref, { finalTitle: title, updatedAt: serverTimestamp() }, { merge: true });
+  await setDoc(doc(db, 'state', 'current'), { finalTitle: title, updatedAt: serverTimestamp() }, { merge: true });
   if (adminStatus === 'published' && currentStoryId) {
     await setDoc(doc(db, 'stories', currentStoryId), { title, updatedAt: serverTimestamp() }, { merge: true });
   }
 }
 function resetAdminWorkArea() {
-  pendingImage = null; pendingSource = null; serverImage = '';
+  pendingImage = null; pendingSource = null; serverImage = ''; analysisStyle = null;
   currentFinalStory = ''; currentFinalPrompt = '';
-  $('edit-textarea').value = ''; $('prompt-display').value = ''; $('title-input').value = '';
+  ['edit-textarea', 'prompt-display', 'title-input', 'interp-input', 'scene-input'].forEach(id => { $(id).value = ''; });
   $('preview-block').classList.add('hidden');
-  $('gen-error').textContent = ''; $('gen-status').textContent = ''; $('scene-info').textContent = '';
+  ['gen-error', 'gen-status', 'scene-info', 'style-info'].forEach(id => { $(id).textContent = ''; });
 }
 
-async function runGeneration(model) {
+// Paso 1: la IA lee el cuento, lo interpreta y prepara la escena, el estilo y un título
+async function runAnalysis() {
+  const story = (currentFinalStory || '').trim();
+  if (!story) { $('gen-error').textContent = 'Primero debe haber un cuento.'; return false; }
+  $('analyze-btn').disabled = true;
+  $('gen-error').textContent = ''; $('scene-info').textContent = '';
+  $('gen-status').textContent = '⏳ La IA está leyendo el cuento…';
+  try {
+    const r = parseAnalysis(await askTextAI(analysisPrompt(story)));
+    $('interp-input').value = r.interp;
+    $('scene-input').value = r.scene;
+    analysisStyle = r.style;
+    $('style-info').textContent = r.style ? `Estilo elegido por la IA: ${STYLE_LABELS[r.style]}.` : '';
+    if (r.title && !$('title-input').value.trim()) {
+      $('title-input').value = r.title;
+      await saveTitleEverywhere(r.title);
+    }
+    refreshPromptDisplay();
+    $('gen-status').textContent = '✅ Listo. Revisa lo que entendió la IA y corrige lo que quieras antes de generar la imagen.';
+    return true;
+  } catch (e) {
+    console.warn('análisis con IA falló:', e);
+    $('scene-info').textContent = '⚠️ No se pudo analizar el cuento con IA (' + e.message + '). Puedes escribir la descripción a mano, o generar con el texto directo (menos fiel). Usa "Probar Gemini" en Claves de IA para ver qué falla.';
+    $('gen-status').textContent = '';
+    return false;
+  } finally { $('analyze-btn').disabled = false; }
+}
+
+// Paso 2: imagen
+async function runGeneration(model, useKey) {
   const story = (currentFinalStory || '').trim();
   if (!story) { $('gen-error').textContent = 'Primero debe haber un cuento.'; return; }
-  lastEngine = model;
+  lastEngine = { model, useKey };
   setGenBusy(true);
-  $('gen-error').textContent = ''; $('scene-info').textContent = '';
+  $('gen-error').textContent = '';
   try {
-    const manualStyle = $('style-select').value;
-    let styleKey = manualStyle !== 'auto' ? manualStyle : null;
-    let scene = null;
-    $('gen-status').textContent = '⏳ Analizando el cuento con IA…';
-    try {
-      const parsed = parseScene(await askTextAI(sceneAnalysisPrompt(story)));
-      scene = parsed.scene;
-      if (!styleKey) styleKey = parsed.style;
-    } catch (e) {
-      console.warn('análisis con IA falló:', e);
-      $('scene-info').textContent = '⚠️ No se pudo analizar el cuento con IA (' + e.message + '). Se usa el texto directo, que puede dar una imagen menos fiel. Pega una clave de Gemini en "Claves de IA" para arreglarlo.';
-    }
-    styleKey = styleKey || 'cartoon3d';
-    const prompt = scene ? buildImagePrompt(scene, styleKey) : buildFallbackPrompt(story, styleKey);
-    if (scene) $('scene-info').textContent = `🎬 Escena elegida: ${scene} · Estilo: ${STYLE_LABELS[styleKey]}`;
-    $('gen-status').textContent = `⏳ Dibujando con Pollinations (${model})… puede tardar entre 10 y 30 s`;
-    const dataURL = await generateWithPollinations(prompt, model, (m) => { $('gen-status').textContent = m; });
+    if (!$('scene-input').value.trim()) await runAnalysis();
+    const scene = $('scene-input').value.trim();
+    const sk = currentStyleKey() || 'cartoon3d';
+    const prompt = scene ? buildImagePrompt(scene, sk) : buildFallbackPrompt(story, sk);
+    $('gen-status').textContent = `⏳ Dibujando con ${model}… puede tardar entre 10 y 30 s`;
+    const key = useKey ? (getKeys().pollen || '') : '';
+    const dataURL = await generateWithPollinations(prompt, model, (m) => { $('gen-status').textContent = m; }, key);
     showPreview(dataURL, 'pollinations');
     $('gen-status').textContent = '✅ Imagen lista. Revisa la vista previa.';
   } catch (e) {
     console.error(e);
     $('gen-error').textContent = 'No se pudo generar: ' + e.message;
-    $('gen-status').textContent = 'Prueba de nuevo, usa el otro botón o el Plan B/C.';
+    $('gen-status').textContent = 'Prueba de nuevo, usa otro motor o el Plan B/C.';
   } finally { setGenBusy(false); }
+}
+
+async function loadPollModels() {
+  const key = getKeys().pollen || '';
+  const sel = $('pol-model');
+  sel.innerHTML = '';
+  if (!key) {
+    sel.innerHTML = '<option value="">Guarda tu clave de Pollinations para ver los modelos</option>';
+    sel.disabled = true; $('gen-pol-btn').disabled = true; return;
+  }
+  let names = [];
+  try {
+    const res = await fetch('https://gen.pollinations.ai/image/models', { headers: { Authorization: `Bearer ${key}` } });
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    names = (Array.isArray(data) ? data : (data.models || [])).map(m => typeof m === 'string' ? m : (m.name || m.id)).filter(Boolean);
+  } catch (e) { console.warn('modelos de Pollinations:', e); }
+  if (!names.length) names = ['flux'];
+  names.forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
+  sel.disabled = false; $('gen-pol-btn').disabled = false;
+}
+
+/* --- Cuentos publicados (borrar de la galería) --- */
+async function loadAdminStories() {
+  const list = $('stories-list');
+  list.textContent = 'Cargando…';
+  try {
+    const snap = await getDocs(query(collection(db, 'stories'), orderBy('publishedAt', 'desc')));
+    list.textContent = '';
+    if (snap.empty) { list.innerHTML = '<p class="info">No hay cuentos publicados.</p>'; return; }
+    snap.forEach(d => {
+      const s = d.data();
+      const row = document.createElement('label'); row.className = 'story-row';
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = d.id;
+      const img = document.createElement('img'); img.src = s.image || ''; img.alt = ''; img.loading = 'lazy';
+      const info = document.createElement('span'); info.className = 'story-row-info';
+      const ts = s.publishedAt && s.publishedAt.toDate ? s.publishedAt.toDate().toLocaleString('es-AR') : '';
+      info.textContent = s.title || 'Cuento sin título';
+      const small = document.createElement('small'); small.textContent = ts; info.appendChild(small);
+      row.append(cb, img, info); list.appendChild(row);
+    });
+  } catch (e) {
+    console.error(e);
+    list.textContent = 'No se pudo cargar la lista: ' + e.message;
+  }
 }
 
 function setupAdmin() {
@@ -619,6 +862,8 @@ function setupAdmin() {
   const keys = getKeys();
   $('gemini-key').value = keys.gemini || '';
   $('pollen-key').value = keys.pollen || '';
+  loadPollModels();
+  loadAdminStories();
 
   const u = onSnapshot(doc(db, 'state', 'current'), (snap) => {
     const data = snap.exists() ? snap.data() : {};
@@ -634,7 +879,7 @@ function setupAdmin() {
     $('state-info').textContent =
       status === 'idle' ? 'Estado: sin cuento activo.'
       : status === 'writing_open' ? 'Estado: escritura ABIERTA.'
-      : status === 'writing_closed' ? 'Estado: cuento CERRADO. Genera el título y la imagen.'
+      : status === 'writing_closed' ? 'Estado: cuento CERRADO. Analízalo con IA, genera el título y la imagen.'
       : 'Estado: cuento PUBLICADO. Puedes seguir editándolo.';
 
     const showIllus = (status === 'writing_closed' || status === 'published');
@@ -643,11 +888,8 @@ function setupAdmin() {
 
     if (showIllus) {
       if (document.activeElement !== $('edit-textarea')) $('edit-textarea').value = currentFinalStory;
-      if (!currentFinalPrompt) {
-        const sv = $('style-select').value;
-        currentFinalPrompt = buildCopyPrompt(currentFinalStory, sv === 'auto' ? null : sv);
-      }
-      $('prompt-display').value = currentFinalPrompt;
+      if (!currentFinalPrompt) currentFinalPrompt = buildCopyPrompt(currentFinalStory, currentStyleKey());
+      $('prompt-display').value = $('scene-input').value.trim() ? computeFinalPrompt() : currentFinalPrompt;
       if (document.activeElement !== $('title-input')) $('title-input').value = data.finalTitle || '';
       if (!pendingImage) {
         if (serverImage) { $('preview-image').src = serverImage; $('preview-block').classList.remove('hidden'); }
@@ -716,9 +958,8 @@ function setupAdmin() {
     });
     const story = parts.join(' ');
     const sv = $('style-select').value;
-    const prompt = buildCopyPrompt(story, sv === 'auto' ? null : sv);
     await setDoc(ref, {
-      status: 'writing_closed', finalStory: story, finalPrompt: prompt,
+      status: 'writing_closed', finalStory: story, finalPrompt: buildCopyPrompt(story, sv === 'auto' ? null : sv),
       closedAt: serverTimestamp(), updatedAt: serverTimestamp()
     }, { merge: true });
   });
@@ -745,16 +986,16 @@ function setupAdmin() {
   // Editar el cuento
   $('save-edit-btn').addEventListener('click', async () => {
     const newText = $('edit-textarea').value.trim();
-    const sv = $('style-select').value;
-    const newPrompt = buildCopyPrompt(newText, sv === 'auto' ? null : sv);
+    currentFinalStory = newText;
+    refreshPromptDisplay();
     try {
-      await setDoc(doc(db, 'state', 'current'), { finalStory: newText, finalPrompt: newPrompt, updatedAt: serverTimestamp() }, { merge: true });
+      await setDoc(doc(db, 'state', 'current'), { finalStory: newText, finalPrompt: currentFinalPrompt, updatedAt: serverTimestamp() }, { merge: true });
       if (adminStatus === 'published' && currentStoryId) {
         await setDoc(doc(db, 'stories', currentStoryId), { story: newText, updatedAt: serverTimestamp() }, { merge: true });
       }
-      $('edit-feedback').textContent = '✅ Guardado.';
+      $('edit-feedback').textContent = '✅ Guardado. Si cambiaste el cuento, vuelve a analizarlo con IA.';
     } catch (e) { console.error(e); $('edit-feedback').textContent = 'No se pudo guardar: ' + e.message; }
-    setTimeout(() => { $('edit-feedback').textContent = ''; }, 3000);
+    setTimeout(() => { $('edit-feedback').textContent = ''; }, 5000);
   });
   $('cancel-edit-btn').addEventListener('click', () => { $('edit-textarea').value = currentFinalStory; });
 
@@ -768,30 +1009,45 @@ function setupAdmin() {
     $('title-feedback').textContent = '⏳ Generando título…';
     $('gen-title-btn').disabled = true;
     try {
-      const title = await generateTitleWithAI(story);
+      const title = await generateTitleWithAI(story, $('interp-input').value.trim());
       $('title-input').value = title;
       await saveTitleEverywhere(title);
       $('title-feedback').textContent = '✅ Título generado. Puedes editarlo a mano.';
     } catch (e) {
       console.error(e);
-      $('title-feedback').textContent = 'No se pudo generar con IA (' + e.message + '). Escríbelo a mano o pega una clave de Gemini en "Claves de IA".';
+      $('title-feedback').textContent = 'No se pudo generar con IA (' + e.message + '). Escríbelo a mano o revisa "Claves de IA".';
     } finally { $('gen-title-btn').disabled = false; }
   });
 
   // Claves
   $('save-keys-btn').addEventListener('click', () => {
     saveKeys({ gemini: $('gemini-key').value.trim(), pollen: $('pollen-key').value.trim() });
-    geminiModelCache = null;
+    geminiModelsCache = null; geminiWorking = null;
     $('keys-feedback').textContent = '✅ Claves guardadas en este navegador.';
-    setTimeout(() => { $('keys-feedback').textContent = ''; }, 4000);
+    loadPollModels();
+  });
+  $('test-gemini-btn').addEventListener('click', async () => {
+    const key = $('gemini-key').value.trim();
+    const fb = $('keys-feedback');
+    if (!key) { fb.textContent = 'Primero pega tu clave de Gemini.'; return; }
+    fb.textContent = '⏳ Probando Gemini…';
+    geminiModelsCache = null;
+    try {
+      const models = await geminiModelList(key);
+      const lines = [];
+      for (const m of models.slice(0, 5)) {
+        const r = await callGemini(m, key, 'Responde solo con la palabra OK.');
+        lines.push(`${r.ok ? '✅' : '❌'} ${m}: ${r.ok ? 'funciona' : (r.status + ' ' + r.msg.slice(0, 110))}`);
+        if (r.ok) { geminiWorking = m; break; }
+      }
+      fb.textContent = lines.join('\n');
+    } catch (e) { fb.textContent = '❌ ' + e.message; }
   });
 
-  // Estilo y prompt
-  $('style-select').addEventListener('change', () => {
-    const sv = $('style-select').value;
-    currentFinalPrompt = buildCopyPrompt(currentFinalStory, sv === 'auto' ? null : sv);
-    $('prompt-display').value = currentFinalPrompt;
-  });
+  // Análisis, estilo y prompt
+  $('analyze-btn').addEventListener('click', runAnalysis);
+  $('scene-input').addEventListener('input', refreshPromptDisplay);
+  $('style-select').addEventListener('change', refreshPromptDisplay);
   const copyPrompt = async () => {
     const text = $('prompt-display').value;
     try { await navigator.clipboard.writeText(text); }
@@ -803,17 +1059,16 @@ function setupAdmin() {
   document.querySelectorAll('.ext-ai').forEach(a => a.addEventListener('click', copyPrompt));
 
   // Generar imagen
-  $('gen-flux-btn').addEventListener('click', () => runGeneration('flux'));
-  $('gen-turbo-btn').addEventListener('click', () => runGeneration('turbo'));
+  $('gen-flux-btn').addEventListener('click', () => runGeneration('flux', false));
+  $('gen-turbo-btn').addEventListener('click', () => runGeneration('turbo', false));
+  $('gen-pol-btn').addEventListener('click', () => runGeneration($('pol-model').value || 'flux', true));
   $('regen-btn').addEventListener('click', () => {
     if (pendingSource === 'manual') $('upload-input').click();
-    else runGeneration(lastEngine);
+    else runGeneration(lastEngine.model, lastEngine.useKey);
   });
 
-  // Subir imagen (Plan B)
-  $('upload-btn').addEventListener('click', () => $('upload-input').click());
-  $('upload-input').addEventListener('change', async (e) => {
-    const file = e.target.files[0]; if (!file) return;
+  // Subir (Plan B) o pegar una imagen (Ctrl+V)
+  const loadImageFile = async (file) => {
     $('gen-error').textContent = ''; $('gen-status').textContent = '⏳ Preparando la imagen…';
     try {
       showPreview(await compressBlobToDataURL(file), 'manual');
@@ -823,7 +1078,19 @@ function setupAdmin() {
       $('gen-error').textContent = 'No se pudo procesar la imagen: ' + err.message;
       $('gen-status').textContent = '';
     }
+  };
+  $('upload-btn').addEventListener('click', () => $('upload-input').click());
+  $('upload-input').addEventListener('change', async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    await loadImageFile(file);
     e.target.value = '';
+  });
+  document.addEventListener('paste', (e) => {
+    if (!isAdmin || $('illustration-block').classList.contains('hidden')) return;
+    const item = [...(e.clipboardData ? e.clipboardData.items : [])].find(i => i.type.startsWith('image/'));
+    if (!item) return;
+    e.preventDefault();
+    loadImageFile(item.getAsFile());
   });
 
   // Publicar
@@ -837,25 +1104,56 @@ function setupAdmin() {
     $('gen-status').textContent = '⏳ Publicando…';
     const title = $('title-input').value.trim() || 'Cuento sin título';
     const sv = $('style-select').value;
+    const finalPrompt = computeFinalPrompt();
     try {
       await setDoc(doc(db, 'stories', currentStoryId), {
-        title, story: currentFinalStory, prompt: currentFinalPrompt,
+        title, story: currentFinalStory, prompt: finalPrompt,
         image: img, style: sv, storyId: currentStoryId,
         publishedAt: serverTimestamp(), updatedAt: serverTimestamp()
       });
       await setDoc(doc(db, 'state', 'current'), {
         status: 'published',
-        finalStory: currentFinalStory, finalPrompt: currentFinalPrompt,
+        finalStory: currentFinalStory, finalPrompt,
         finalTitle: title, finalImage: img, finalStyle: sv,
         publishedAt: serverTimestamp(), updatedAt: serverTimestamp()
       }, { merge: true });
       pendingImage = null; pendingSource = null;
       $('gen-status').textContent = '✅ Publicado.';
+      loadAdminStories();
     } catch (e) {
       console.error(e);
       $('gen-error').textContent = 'Error al publicar: ' + (e.code ? e.code + ' · ' : '') + e.message;
       $('gen-status').textContent = '';
       updatePublishButton();
+    }
+  });
+
+  // Gestor de cuentos publicados
+  $('stories-refresh-btn').addEventListener('click', loadAdminStories);
+  $('stories-all-btn').addEventListener('click', () => {
+    const boxes = [...$('stories-list').querySelectorAll('input[type=checkbox]')];
+    const all = boxes.length > 0 && boxes.every(b => b.checked);
+    boxes.forEach(b => { b.checked = !all; });
+    $('stories-all-btn').textContent = all ? 'Marcar todos' : 'Desmarcar todos';
+  });
+  $('stories-delete-btn').addEventListener('click', async () => {
+    const fb = $('stories-feedback');
+    const ids = [...$('stories-list').querySelectorAll('input:checked')].map(i => i.value);
+    if (!ids.length) { fb.textContent = 'Marca al menos un cuento.'; return; }
+    if (!confirm(`¿Eliminar ${ids.length} cuento(s) de la galería? No se puede deshacer.`)) return;
+    try {
+      for (let i = 0; i < ids.length; i += 400) {
+        const batch = writeBatch(db);
+        ids.slice(i, i + 400).forEach(id => batch.delete(doc(db, 'stories', id)));
+        await batch.commit();
+      }
+      fb.textContent = `✅ Eliminados: ${ids.length}.` + (ids.includes(currentStoryId) && adminStatus === 'published'
+        ? ' El cuento que está en pantalla para el público sigue visible: usa "Reiniciar todo" para quitarlo.' : '');
+      loadAdminStories();
+    } catch (e) {
+      console.error(e);
+      fb.textContent = 'No se pudo eliminar: ' + (e.code ? e.code + ' · ' : '') + e.message
+        + (e.code === 'permission-denied' ? ' (las reglas de Firestore no permiten borrar en "stories")' : '');
     }
   });
 }
