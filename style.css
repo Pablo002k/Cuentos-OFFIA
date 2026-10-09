@@ -137,6 +137,31 @@ textarea { resize: vertical; line-height: 1.5; }
   .padlet-story { align-self: center; padding: 2rem; }
 }
 
+/* ===== Galería ===== */
+.section-title { font-family: var(--serif); font-weight: 800; color: #fff; font-size: 2rem; margin-bottom: .3rem; }
+.gallery-grid { display: grid; gap: 1.1rem; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); margin-top: 1.2rem; align-items: start; }
+.gallery-card { background: var(--paper); color: var(--paper-ink); border-radius: 20px; overflow: hidden; cursor: pointer; box-shadow: 0 14px 30px rgba(0,0,0,.35); transition: transform .2s ease; }
+.gallery-card:hover { transform: translateY(-4px); }
+.gallery-card img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: #e9e2f5; }
+.gallery-body { padding: 1rem 1.1rem 1.2rem; }
+.gallery-title { font-family: var(--serif); font-size: 1.3rem; line-height: 1.2; margin-bottom: .5rem; }
+.gallery-story { font-family: var(--serif); font-size: 1.05rem; line-height: 1.6; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: .6rem; overflow-wrap: anywhere; }
+.gallery-card.open .gallery-story { display: block; -webkit-line-clamp: unset; }
+.gallery-date { font-size: .8rem; color: #7d7298; margin: 0; }
+
+/* ===== Panel de administrador ===== */
+#admin-panel { align-items: flex-start; }
+.admin-wrap { width: min(820px, 100%); margin: 0 auto; }
+.admin-head { margin-bottom: 1rem; }
+.admin-head h2 { font-family: var(--serif); font-weight: 800; color: #fff; font-size: 2rem; }
+.panel { background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 20px; padding: 1.2rem; margin-bottom: 1rem; }
+.panel h3 { font-family: var(--serif); color: #fff; font-size: 1.25rem; margin-bottom: .6rem; }
+.panel h4 { color: #fff; margin: 1.2rem 0 .3rem; font-size: 1rem; }
+.panel .story { font-size: 1.1rem; min-height: 90px; max-height: 260px; }
+.preview-img { width: 100%; max-height: 440px; object-fit: contain; border-radius: 16px; background: rgba(0,0,0,.25); display: block; }
+.keys summary { cursor: pointer; font-weight: 700; color: #fff; }
+.keys[open] summary { margin-bottom: .6rem; }
+
 /* ===== Fondo animado constante ===== */
 body::after {
   inset: 0;
@@ -221,3 +246,13 @@ body::after {
 .story-row-info small { display: block; color: var(--muted); font-weight: 400; }
 .danger { color: #ffb3c4; }
 #keys-feedback, #scene-info, #title-feedback { white-space: pre-line; }
+
+/* ===== Botón de música ===== */
+.music-btn { position: fixed; top: .8rem; right: .8rem; z-index: 70; width: 44px; height: 44px; padding: 0; border-radius: 50%; font-size: 1.25rem; line-height: 1; background: rgba(10,6,30,.7); border: 1px solid var(--line); color: #fff; }
+.music-btn.on { animation: musicPulse 3s ease-in-out infinite; }
+@keyframes musicPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.1); } }
+
+/* ===== Accesibilidad: respetar "reducir movimiento" ===== */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
