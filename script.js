@@ -19,7 +19,7 @@ const firebaseConfig = {
 };
 const ADMIN_EMAIL = "agustincejas2@gmail.com";
 
-const COOLDOWN_SECONDS = 40;
+const COOLDOWN_SECONDS = 30;
 const MAX_WORDS = 3;
 const MAX_NICKNAME_LENGTH = 20;
 const IMAGE_MAX_SIZE = 1024;
