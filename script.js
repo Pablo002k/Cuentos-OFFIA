@@ -82,28 +82,16 @@ const BG_PHRASES = [
 (function buildBackgroundPhrases() {
   const bg = document.querySelector('.bg');
   if (!bg) return;
-  const COUNT = window.innerWidth < 700 ? 3 : 5; // frases visibles a la vez
-  const DURATION = 30;                           // segundos que tarda cada frase en subir
-  let queue = [];
-  const nextPhrase = () => {
-    if (!queue.length) queue = BG_PHRASES.slice().sort(() => Math.random() - 0.5);
-    return queue.pop();
-  };
-  const place = (el) => {
-    el.textContent = nextPhrase();
-    el.style.fontSize = (1 + Math.random() * 0.3) + 'rem';
-    const room = Math.max(0, bg.clientWidth - el.offsetWidth - 70);
-    el.style.left = (20 + Math.random() * room) + 'px';
-  };
-  for (let i = 0; i < COUNT; i++) {
+  BG_PHRASES.forEach((text, i) => {
     const s = document.createElement('span');
     s.className = 'glyph';
-    s.style.animationDuration = DURATION + 's';
-    s.style.animationDelay = (-(i * DURATION / COUNT)) + 's'; // escalonadas: nunca se pisan
-    s.addEventListener('animationiteration', () => place(s));  // al reiniciar: otra frase y otra posición
+    s.textContent = text;
+    s.style.left = ((i * 29) % 72 + 2) + '%';
+    s.style.animationDuration = (24 + (i * 7) % 13) + 's';
+    s.style.animationDelay = (-((i * 37) % 30)) + 's';
+    s.style.fontSize = (1 + ((i * 5) % 4) * 0.12) + 'rem';
     bg.appendChild(s);
-    place(s);
-  }
+  });
 })();
 
 /* ============ MÚSICA DE FONDO ============ */
@@ -827,7 +815,7 @@ function showPreview(dataURL, source) {
   $('preview-block').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 function setGenBusy(busy) {
-  ['gen-flux-btn', 'gen-turbo-btn', 'gen-gemini-btn', 'regen-btn'].forEach(id => { $(id).disabled = busy; });
+  ['gen-flux-btn', 'gen-turbo-btn', 'regen-btn'].forEach(id => { $(id).disabled = busy; });
   $('gen-pol-btn').disabled = busy || $('pol-model').disabled;
 }
 async function saveTitleEverywhere(title) {
@@ -893,73 +881,6 @@ async function runGeneration(model, useKey) {
     console.error(e);
     $('gen-error').textContent = 'No se pudo generar: ' + e.message;
     $('gen-status').textContent = 'Prueba de nuevo, usa otro motor o el Plan B/C.';
-  } finally { setGenBusy(false); }
-}
-
-// Imagen con Gemini (modelo de imagen de la API). Necesita una clave con cuota de imágenes.
-let geminiImageModelsCache = null;
-async function geminiImageModels(key) {
-  if (geminiImageModelsCache) return geminiImageModelsCache;
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(key)}`);
-  if (!res.ok) throw new Error(`la clave no sirvió (${res.status})`);
-  const data = await res.json();
-  const all = (data.models || [])
-    .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
-    .map(m => m.name.replace('models/', ''))
-    .filter(n => /image/.test(n));
-  const pref = ['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview'].filter(n => all.includes(n));
-  geminiImageModelsCache = [...pref, ...all.filter(n => !pref.includes(n)).sort()];
-  if (!geminiImageModelsCache.length) throw new Error('tu clave no tiene modelos de imagen disponibles');
-  return geminiImageModelsCache;
-}
-async function runGeminiImageGeneration() {
-  const key = getKeys().gemini;
-  if (!key) { $('gen-error').textContent = 'Pega tu clave de Gemini en "Claves de IA" (abajo del todo) y pulsa Guardar claves.'; return; }
-  const story = (currentFinalStory || '').trim();
-  if (!story) { $('gen-error').textContent = 'Primero debe haber un cuento.'; return; }
-  lastEngine = { gemini: true };
-  setGenBusy(true);
-  $('gen-error').textContent = '';
-  try {
-    if (!$('scene-input').value.trim()) await runAnalysis();
-    const scene = $('scene-input').value.trim();
-    const sk = currentStyleKey() || 'cartoon3d';
-    const prompt = scene ? buildImagePrompt(scene, sk) : buildFallbackPrompt(story, sk);
-    $('gen-status').textContent = '⏳ Generando con Gemini…';
-    const models = await geminiImageModels(key);
-    const errs = [];
-    let part = null;
-    for (const m of models.slice(0, 3)) {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(key)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        part = (data.candidates?.[0]?.content?.parts || []).find(p => p.inlineData && p.inlineData.data);
-        if (part) break;
-        errs.push(`${m}: respondió sin imagen`);
-        continue;
-      }
-      const msg = (data.error && data.error.message) || '';
-      errs.push(`${m}: ${res.status}${msg ? ' (' + msg.slice(0, 120) + ')' : ''}`);
-      if (res.status === 401 || res.status === 403) break;
-    }
-    if (!part) {
-      const quota = errs.some(e => /429|quota|billing|limit: ?0/i.test(e));
-      throw new Error(errs.join(' · ') + (quota ? ' → Tu clave no tiene cuota de imágenes (lo normal sin facturación activa).' : ''));
-    }
-    const bin = atob(part.inlineData.data);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const blob = new Blob([bytes], { type: part.inlineData.mimeType || 'image/png' });
-    showPreview(await compressBlobToDataURL(blob), 'gemini');
-    $('gen-status').textContent = '✅ Imagen de Gemini lista. Revisa la vista previa.';
-  } catch (e) {
-    console.error(e);
-    $('gen-error').textContent = 'No se pudo generar con Gemini: ' + e.message;
-    $('gen-status').textContent = 'Prueba con Flux/Turbo o el Plan C.';
   } finally { setGenBusy(false); }
 }
 
@@ -1173,7 +1094,7 @@ function setupAdmin() {
   // Claves
   $('save-keys-btn').addEventListener('click', () => {
     saveKeys({ gemini: $('gemini-key').value.trim(), pollen: $('pollen-key').value.trim() });
-    geminiModelsCache = null; geminiWorking = null; geminiImageModelsCache = null;
+    geminiModelsCache = null; geminiWorking = null;
     $('keys-feedback').textContent = '✅ Claves guardadas en este navegador.';
     loadPollModels();
   });
@@ -1213,10 +1134,8 @@ function setupAdmin() {
   $('gen-flux-btn').addEventListener('click', () => runGeneration('flux', false));
   $('gen-turbo-btn').addEventListener('click', () => runGeneration('turbo', false));
   $('gen-pol-btn').addEventListener('click', () => runGeneration($('pol-model').value || 'flux', true));
-  $('gen-gemini-btn').addEventListener('click', runGeminiImageGeneration);
   $('regen-btn').addEventListener('click', () => {
     if (pendingSource === 'manual') $('upload-input').click();
-    else if (lastEngine.gemini) runGeminiImageGeneration();
     else runGeneration(lastEngine.model, lastEngine.useKey);
   });
 
