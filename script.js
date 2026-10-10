@@ -1146,6 +1146,7 @@ function setupAdmin() {
   $('gen-flux-btn').addEventListener('click', () => runGeneration('flux', false));
   $('gen-turbo-btn').addEventListener('click', () => runGeneration('turbo', false));
   $('gen-pol-btn').addEventListener('click', () => runGeneration($('pol-model').value || 'flux', true));
+  $('gen-gemini-btn').addEventListener('click', () => runGeminiImageGeneration());
   $('regen-btn').addEventListener('click', () => {
     if (pendingSource === 'manual') $('upload-input').click();
     else runGeneration(lastEngine.model, lastEngine.useKey);
@@ -1240,4 +1241,76 @@ function setupAdmin() {
         + (e.code === 'permission-denied' ? ' (las reglas de Firestore no permiten borrar en "stories")' : '');
     }
   });
+}
+
+async function runGeminiImageGeneration() {
+  const keys = getKeys();
+  if (!keys.gemini) {
+    \$('gen-error').textContent = '⚠️ Necesitas configurar tu clave de Gemini en la sección "Claves de IA" abajo del todo.';
+    return;
+  }
+  
+  const story = (currentFinalStory || '').trim();
+  if (!story) {
+    \$('gen-error').textContent = 'Primero debe haber un cuento.';
+    return;
+  }
+
+  setGenBusy(true);
+  $('gen-error').textContent = '';$('gen-status').textContent = '⏳ Generando imagen con Google Gemini...';
+
+  try {
+    if (!\$('scene-input').value.trim()) await runAnalysis();
+    const scene = \$('scene-input').value.trim();
+    const sk = currentStyleKey() || 'cartoon3d';
+    const prompt = scene ? buildImagePrompt(scene, sk) : buildFallbackPrompt(story, sk);
+
+    const apiKey = keys.gemini;
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{ text: `Genera una imagen basada en esta descripción detallada: ${prompt}` }]
+        }],
+        generationConfig: {
+          responseModalities: ["TEXT", "IMAGE"]
+        }
+      })
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error?.message || `Error ${response.status}`);
+    }
+
+    let base64Data = null;
+    let mimeType = 'image/png';
+    const candidates = data.candidates || [];
+    for (const candidate of candidates) {
+      const parts = candidate.content?.parts || [];
+      for (const part of parts) {
+        if (part.inlineData && part.inlineData.data) {
+          base64Data = part.inlineData.data;
+          mimeType = part.inlineData.mimeType || 'image/png';
+          break;
+        }
+      }
+      if (base64Data) break;
+    }
+
+    if (!base64Data) {
+      throw new Error('El modelo respondió pero no devolvió ninguna imagen. Intenta de nuevo.');
+    }
+
+    const dataURL = `data:${mimeType};base64,${base64Data}`;
+    showPreview(dataURL, 'pollinations');
+    \$('gen-status').textContent = '✅ Imagen generada con Gemini con éxito. Revisa la vista previa.';
+  } catch (e) {
+    console.error(e);
+    \$('gen-error').textContent = 'No se pudo generar con Gemini: ' + e.message;
+    \$('gen-status').textContent = '';
+  } finally {
+    setGenBusy(false);
+  }
 }
