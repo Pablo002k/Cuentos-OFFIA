@@ -1242,74 +1242,36 @@ function setupAdmin() {
     }
   });
 
-  async function runGeminiImageGeneration() {
-  const keys = getKeys();
-  if (!keys.gemini) {
-    \$('gen-error').textContent = '⚠️ Necesitas configurar tu clave de Gemini en la sección "Claves de IA" abajo del todo.';
-    return;
-  }
-  
+async function runGeminiImageGeneration() {
+  const key = getKeys().gemini;
+  if (!key) { $('gen-error').textContent = 'Pega tu clave de Gemini en "Claves de IA".'; return; }
   const story = (currentFinalStory || '').trim();
-  if (!story) {
-    \$('gen-error').textContent = 'Primero debe haber un cuento.';
-    return;
-  }
-
+  if (!story) { $('gen-error').textContent = 'Primero debe haber un cuento.'; return; }
   setGenBusy(true);
-  $('gen-error').textContent = '';$('gen-status').textContent = '⏳ Generando imagen con Google Gemini...';
-
+  $('gen-error').textContent = ''; $('gen-status').textContent = '⏳ Generando con Gemini…';
   try {
-    if (!\$('scene-input').value.trim()) await runAnalysis();
-    const scene = \$('scene-input').value.trim();
+    if (!$('scene-input').value.trim()) await runAnalysis();
+    const scene = $('scene-input').value.trim();
     const sk = currentStyleKey() || 'cartoon3d';
     const prompt = scene ? buildImagePrompt(scene, sk) : buildFallbackPrompt(story, sk);
-
-    const apiKey = keys.gemini;
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`, {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${encodeURIComponent(key)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          parts: [{ text: `Genera una imagen basada en esta descripción detallada: ${prompt}` }]
-        }],
-        generationConfig: {
-          responseModalities: ["TEXT", "IMAGE"]
-        }
-      })
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } })
     });
-
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error?.message || `Error ${response.status}`);
-    }
-
-    let base64Data = null;
-    let mimeType = 'image/png';
-    const candidates = data.candidates || [];
-    for (const candidate of candidates) {
-      const parts = candidate.content?.parts || [];
-      for (const part of parts) {
-        if (part.inlineData && part.inlineData.data) {
-          base64Data = part.inlineData.data;
-          mimeType = part.inlineData.mimeType || 'image/png';
-          break;
-        }
-      }
-      if (base64Data) break;
-    }
-
-    if (!base64Data) {
-      throw new Error('El modelo respondió pero no devolvió ninguna imagen. Intenta de nuevo.');
-    }
-
-    const dataURL = `data:${mimeType};base64,${base64Data}`;
-    showPreview(dataURL, 'pollinations');
-    \$('gen-status').textContent = '✅ Imagen generada con Gemini con éxito. Revisa la vista previa.';
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((data.error && data.error.message) || ('error ' + res.status));
+    const part = (data.candidates?.[0]?.content?.parts || []).find(p => p.inlineData && p.inlineData.data);
+    if (!part) throw new Error('Gemini no devolvió ninguna imagen');
+    const bin = atob(part.inlineData.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: part.inlineData.mimeType || 'image/png' });
+    showPreview(await compressBlobToDataURL(blob), 'pollinations');
+    $('gen-status').textContent = '✅ Imagen lista. Revisa la vista previa.';
   } catch (e) {
     console.error(e);
-    \$('gen-error').textContent = 'No se pudo generar con Gemini: ' + e.message;
-    \$('gen-status').textContent = '';
-  } finally {
-    setGenBusy(false);
-  });
+    $('gen-error').textContent = 'No se pudo generar con Gemini: ' + e.message;
+    $('gen-status').textContent = '';
+  } finally { setGenBusy(false); }
 }
