@@ -82,16 +82,28 @@ const BG_PHRASES = [
 (function buildBackgroundPhrases() {
   const bg = document.querySelector('.bg');
   if (!bg) return;
-  BG_PHRASES.forEach((text, i) => {
+  const COUNT = window.innerWidth < 700 ? 3 : 5; // frases visibles a la vez
+  const DURATION = 30;                           // segundos que tarda cada frase en subir
+  let queue = [];
+  const nextPhrase = () => {
+    if (!queue.length) queue = BG_PHRASES.slice().sort(() => Math.random() - 0.5);
+    return queue.pop();
+  };
+  const place = (el) => {
+    el.textContent = nextPhrase();
+    el.style.fontSize = (1 + Math.random() * 0.3) + 'rem';
+    const room = Math.max(0, bg.clientWidth - el.offsetWidth - 70);
+    el.style.left = (20 + Math.random() * room) + 'px';
+  };
+  for (let i = 0; i < COUNT; i++) {
     const s = document.createElement('span');
     s.className = 'glyph';
-    s.textContent = text;
-    s.style.left = ((i * 29) % 72 + 2) + '%';
-    s.style.animationDuration = (24 + (i * 7) % 13) + 's';
-    s.style.animationDelay = (-((i * 37) % 30)) + 's';
-    s.style.fontSize = (1 + ((i * 5) % 4) * 0.12) + 'rem';
+    s.style.animationDuration = DURATION + 's';
+    s.style.animationDelay = (-(i * DURATION / COUNT)) + 's'; // escalonadas: nunca se pisan
+    s.addEventListener('animationiteration', () => place(s));  // al reiniciar: otra frase y otra posición
     bg.appendChild(s);
-  });
+    place(s);
+  }
 })();
 
 /* ============ MÚSICA DE FONDO ============ */
