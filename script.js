@@ -1241,9 +1241,8 @@ function setupAdmin() {
         + (e.code === 'permission-denied' ? ' (las reglas de Firestore no permiten borrar en "stories")' : '');
     }
   });
-}
 
-async function runGeminiImageGeneration() {
+  async function runGeminiImageGeneration() {
   const keys = getKeys();
   if (!keys.gemini) {
     \$('gen-error').textContent = '⚠️ Necesitas configurar tu clave de Gemini en la sección "Claves de IA" abajo del todo.';
@@ -1312,5 +1311,5 @@ async function runGeminiImageGeneration() {
     \$('gen-status').textContent = '';
   } finally {
     setGenBusy(false);
-  }
+  });
 }
